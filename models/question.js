@@ -11,10 +11,6 @@ const Question = sequelize.define(
       autoIncrement: true,
     },
     title: {
-      type: DataTypes.STRING,
-      allowNull: false,
-    },
-    content: {
       type: DataTypes.TEXT,
       allowNull: false,
     },

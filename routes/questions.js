@@ -77,7 +77,6 @@ router.get("/", async (req, res) => {
     if (keyword) {
       where[Op.or] = [
         { title: { [Op.like]: `%${keyword}%` } },
-        { content: { [Op.like]: `%${keyword}%` } },
         { answer: { [Op.like]: `%${keyword}%` } },
         { tags: { [Op.like]: `%${keyword}%` } },
       ];
@@ -145,7 +144,6 @@ router.post("/", authMiddleware, async (req, res) => {
   try {
     const {
       title,
-      content,
       options,
       answer,
       analysis,
@@ -155,7 +153,6 @@ router.post("/", authMiddleware, async (req, res) => {
     } = req.body;
     const question = await Question.create({
       title,
-      content,
       options,
       answer,
       analysis,
