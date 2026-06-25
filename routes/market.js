@@ -1,8 +1,8 @@
 const express = require("express");
 const MarketApp = require("../models/marketApp");
 const User = require("../models/user");
-const { authMiddleware, adminOnly } = require("../middleware/superAdmin");
-const { optionalAuth } = require("../middleware/auth");
+const { authMiddleware, optionalAuth } = require("../middleware/auth");
+const { adminOnly } = require("../middleware/superAdmin");
 
 const router = express.Router();
 

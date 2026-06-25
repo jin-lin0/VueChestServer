@@ -1,5 +1,3 @@
-const { authMiddleware } = require("./auth");
-
 function superAdminOnly(req, res, next) {
   if (!req.user || req.user.role !== "super_admin") {
     return res.status(403).json({
@@ -20,4 +18,4 @@ function adminOnly(req, res, next) {
   next();
 }
 
-module.exports = { authMiddleware, superAdminOnly, adminOnly };
+module.exports = { superAdminOnly, adminOnly };
