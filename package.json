@@ -15,6 +15,7 @@
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.14.0",
     "NeteaseCloudMusicApi": "^4.32.0",
+    "resend": "^6.16.0",
     "sequelize": "^6.35.1"
   },
   "devDependencies": {

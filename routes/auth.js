@@ -2,13 +2,78 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
 const { authMiddleware } = require("../middleware/auth");
+const { sendVerificationEmail } = require("../utils/mail");
+const {
+  createCode,
+  verifyCode,
+  CODE_TTL_MS,
+  RESEND_COOLDOWN_MS,
+} = require("../utils/verificationCode");
 
 const router = express.Router();
 
-// 注册（普通用户）
+// 简单邮箱格式校验
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// 发送注册验证码
+router.post("/send-code", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email || !EMAIL_RE.test(email)) {
+      return res.status(400).json({
+        error: "请输入有效的邮箱地址",
+        code: "VALIDATION_ERROR",
+      });
+    }
+
+    // 检查邮箱是否已被注册
+    const used = await User.findOne({ where: { email } });
+    if (used) {
+      return res.status(409).json({
+        error: "该邮箱已被注册",
+        code: "EMAIL_USED",
+      });
+    }
+
+    const { code, cooldown } = createCode(email);
+    if (cooldown > 0) {
+      return res.status(429).json({
+        error: `验证码已发送，请 ${Math.ceil(cooldown / 1000)} 秒后再试`,
+        code: "RATE_LIMITED",
+        retryAfter: Math.ceil(cooldown / 1000),
+      });
+    }
+
+    const result = await sendVerificationEmail(email, code);
+    if (!result.success) {
+      return res.status(502).json({
+        error: `验证码发送失败：${result.error}`,
+        code: "MAIL_SEND_FAILED",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "验证码已发送，请查收邮箱",
+      data: {
+        expiresIn: Math.floor(CODE_TTL_MS / 1000),
+        cooldown: Math.floor(RESEND_COOLDOWN_MS / 1000),
+      },
+    });
+  } catch (error) {
+    console.error("发送验证码错误:", error);
+    res.status(500).json({
+      error: "服务器内部错误",
+      code: "SERVER_ERROR",
+    });
+  }
+});
+
+// 注册（普通用户，需邮箱验证码）
 router.post("/register", async (req, res) => {
   try {
-    const { username, password, email } = req.body;
+    const { username, password, email, code } = req.body;
 
     if (!username || !password) {
       return res.status(400).json({
@@ -31,11 +96,44 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    // 邮箱为必填，并需校验验证码
+    if (!email || !EMAIL_RE.test(email)) {
+      return res.status(400).json({
+        error: "请输入有效的邮箱地址",
+        code: "VALIDATION_ERROR",
+      });
+    }
+
+    if (!code) {
+      return res.status(400).json({
+        error: "请输入邮箱验证码",
+        code: "VALIDATION_ERROR",
+      });
+    }
+
+    // 先查重，避免验证码被白白消耗（验证码校验是一次性的）
     const existing = await User.findOne({ where: { username } });
     if (existing) {
       return res.status(409).json({
         error: "用户名已存在",
         code: "CONFLICT",
+      });
+    }
+
+    const emailUsed = await User.findOne({ where: { email } });
+    if (emailUsed) {
+      return res.status(409).json({
+        error: "该邮箱已被注册",
+        code: "EMAIL_USED",
+      });
+    }
+
+    // 查重通过后再校验验证码（校验成功即清除，一次性）
+    const verify = verifyCode(email, code);
+    if (!verify.valid) {
+      return res.status(400).json({
+        error: verify.reason,
+        code: "CODE_INVALID",
       });
     }
 
