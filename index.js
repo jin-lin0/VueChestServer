@@ -21,9 +21,19 @@ app.get("/", (req, res) => {
   res.send("AI Chat Server is running");
 });
 
-// 健康检查（公开）
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+// 健康检查 + 日志归档（cron 保活用）
+app.get("/health", async (req, res) => {
+  try {
+    const result = await visitLogger.flushToDB();
+    res.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      logsFlushed: result.flushed,
+      bufferRemaining: visitLogger.getBufferSize(),
+    });
+  } catch (e) {
+    res.json({ status: "ok", timestamp: new Date().toISOString(), error: e.message });
+  }
 });
 
 // 管理员认证路由
