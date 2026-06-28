@@ -79,4 +79,14 @@ if (!process.env.VERCEL) {
     });
 }
 
+// 全局错误处理中间件（兜底所有未捕获的异常，统一错误响应格式）
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error("未捕获错误:", err);
+  res.status(err.status || 500).json({
+    error: err.message || "服务器内部错误",
+    code: err.code || "SERVER_ERROR",
+  });
+});
+
 module.exports = app;

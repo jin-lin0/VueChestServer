@@ -20,34 +20,29 @@ async function totalCreatedCount(model) {
 }
 
 router.get("/dashboard", async (req, res) => {
+  const todayApps = await todayCreatedCount(MarketApp);
+
+  let todayQuestions = 0;
   try {
-    const todayApps = await todayCreatedCount(MarketApp);
+    const Question = require("../models/question");
+    todayQuestions = await todayCreatedCount(Question);
+  } catch {}
 
-    let todayQuestions = 0;
-    try {
-      const Question = require("../models/question");
-      todayQuestions = await todayCreatedCount(Question);
-    } catch {}
+  const todayVisits = await VisitLog.sum("count", {
+    where: { date: todayStart() },
+  });
+  const totalVisits = await VisitLog.sum("count");
 
-    const todayVisits = await VisitLog.sum("count", {
-      where: { date: todayStart() },
-    });
-    const totalVisits = await VisitLog.sum("count");
-
-    res.json({
-      success: true,
-      data: {
-        todayNewApps: todayApps,
-        todayNewQuestions: todayQuestions,
-        todayVisits: todayVisits || 0,
-        totalVisits: totalVisits || 0,
-        totalApps: await totalCreatedCount(MarketApp),
-      },
-    });
-  } catch (error) {
-    console.error("获取统计数据错误:", error);
-    res.status(500).json({ error: "服务器内部错误" });
-  }
+  res.json({
+    success: true,
+    data: {
+      todayNewApps: todayApps,
+      todayNewQuestions: todayQuestions,
+      todayVisits: todayVisits || 0,
+      totalVisits: totalVisits || 0,
+      totalApps: await totalCreatedCount(MarketApp),
+    },
+  });
 });
 
 // 调试：查看请求来源信息

@@ -38,14 +38,11 @@ const Question = sequelize.define(
       type: DataTypes.JSON,
       allowNull: true,
     },
-    createdAt: {
-      type: DataTypes.DATE,
-      defaultValue: DataTypes.NOW,
-    },
   },
   {
     tableName: "questions",
-    timestamps: false,
+    timestamps: true,
+    updatedAt: false,
   }
 );
 
