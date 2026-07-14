@@ -5,6 +5,7 @@ const Category = require("../models/category");
 const { Op } = require("sequelize");
 const sequelize = require("../config/database");
 const { authMiddleware } = require("../middleware/auth");
+const { adminOnly } = require("../middleware/superAdmin");
 
 const VALID_DIFFICULTIES = ["easy", "medium", "hard"];
 
@@ -17,7 +18,7 @@ router.get("/categories", async (req, res) => {
 });
 
 // 创建分类
-router.post("/categories", authMiddleware, async (req, res) => {
+router.post("/categories", authMiddleware, adminOnly, async (req, res) => {
   const { name, description } = req.body;
   if (!name || !name.trim()) {
     return res.status(400).json({ error: "分类名称不能为空" });
@@ -27,7 +28,7 @@ router.post("/categories", authMiddleware, async (req, res) => {
 });
 
 // 更新分类
-router.put("/categories/:id", authMiddleware, async (req, res) => {
+router.put("/categories/:id", authMiddleware, adminOnly, async (req, res) => {
   const category = await Category.findByPk(req.params.id);
   if (!category) {
     return res.status(404).json({ error: "分类不存在" });
@@ -40,7 +41,7 @@ router.put("/categories/:id", authMiddleware, async (req, res) => {
 });
 
 // 删除分类
-router.delete("/categories/:id", authMiddleware, async (req, res) => {
+router.delete("/categories/:id", authMiddleware, adminOnly, async (req, res) => {
   const category = await Category.findByPk(req.params.id);
   if (!category) {
     return res.status(404).json({ error: "分类不存在" });
@@ -118,7 +119,7 @@ router.get("/random/:count", async (req, res) => {
 });
 
 // 创建题目
-router.post("/", authMiddleware, async (req, res) => {
+router.post("/", authMiddleware, adminOnly, async (req, res) => {
   const { title, answer, difficulty, categoryId } = req.body;
 
   if (!title || !title.trim()) {
@@ -139,7 +140,7 @@ router.post("/", authMiddleware, async (req, res) => {
 });
 
 // 更新题目
-router.put("/:id", authMiddleware, async (req, res) => {
+router.put("/:id", authMiddleware, adminOnly, async (req, res) => {
   const question = await Question.findByPk(req.params.id);
   if (!question) {
     return res.status(404).json({ error: "题目不存在" });
@@ -155,7 +156,7 @@ router.put("/:id", authMiddleware, async (req, res) => {
 });
 
 // 删除题目
-router.delete("/:id", authMiddleware, async (req, res) => {
+router.delete("/:id", authMiddleware, adminOnly, async (req, res) => {
   const question = await Question.findByPk(req.params.id);
   if (!question) {
     return res.status(404).json({ error: "题目不存在" });
@@ -165,9 +166,9 @@ router.delete("/:id", authMiddleware, async (req, res) => {
 });
 
 // 批量导入题目
-router.post("/import", authMiddleware, async (req, res) => {
+router.post("/import", authMiddleware, adminOnly, async (req, res) => {
   const { questions } = req.body;
-  if (!Array.isArray(questions) || questions.length === 0) {
+  if (!Array.isArray(questions) || questions.length === 0 || questions.length > 500) {
     return res.status(400).json({ error: "请提供有效的题目数组" });
   }
   const created = await Question.bulkCreate(questions);

@@ -5,6 +5,7 @@ const store = new Map(); // key: email → { code, expiresAt, sentAt }
 const CODE_TTL_MS = 5 * 60 * 1000; // 验证码有效期 5 分钟
 const RESEND_COOLDOWN_MS = 60 * 1000; // 重发冷却 60 秒
 const VERIFY_WINDOW_MS = 10 * 60 * 1000; // 验证后保留窗口（防止并发注册）
+const MAX_VERIFY_ATTEMPTS = 5;
 
 /**
  * 生成 6 位数字验证码
@@ -39,6 +40,7 @@ function createCode(email) {
     code,
     expiresAt: now + CODE_TTL_MS,
     sentAt: now,
+    attempts: 0,
   });
   return { code, cooldown: 0 };
 }
@@ -62,7 +64,12 @@ function verifyCode(email, code) {
     return { valid: false, reason: "验证码已过期，请重新获取" };
   }
 
+  entry.attempts += 1;
   if (entry.code !== String(code).trim()) {
+    if (entry.attempts >= MAX_VERIFY_ATTEMPTS) {
+      store.delete(emailKey);
+      return { valid: false, reason: "验证码错误次数过多，请重新获取验证码" };
+    }
     return { valid: false, reason: "验证码错误" };
   }
 

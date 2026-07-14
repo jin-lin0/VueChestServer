@@ -2,6 +2,8 @@ const express = require("express");
 const { Op } = require("sequelize");
 const VisitLog = require("../models/visitLog");
 const MarketApp = require("../models/marketApp");
+const { authMiddleware } = require("../middleware/auth");
+const { adminOnly } = require("../middleware/superAdmin");
 
 const router = express.Router();
 
@@ -19,7 +21,7 @@ async function totalCreatedCount(model) {
   return model.count();
 }
 
-router.get("/dashboard", async (req, res) => {
+router.get("/dashboard", authMiddleware, adminOnly, async (req, res) => {
   const todayApps = await todayCreatedCount(MarketApp);
 
   let todayQuestions = 0;
@@ -46,7 +48,7 @@ router.get("/dashboard", async (req, res) => {
 });
 
 // 调试：查看请求来源信息
-router.get("/whoami", (req, res) => {
+router.get("/whoami", authMiddleware, adminOnly, (req, res) => {
   const ip =
     req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
     req.ip ||

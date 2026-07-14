@@ -23,6 +23,7 @@ function getGeoFromFrontend(headers) {
 // 内存计数器：key = "date|path|country|city" → count
 const buffer = new Map();
 let lastFlushAt = 0;
+let flushPromise = null;
 const FLUSH_INTERVAL_MS = 4 * 60 * 1000; // 超过 4 分钟自动 flush（防止 cron 没触发）
 
 function makeKey(date, path, country, city) {
@@ -31,20 +32,28 @@ function makeKey(date, path, country, city) {
 
 // 批量写入数据库
 async function flushToDB() {
+  if (flushPromise) return flushPromise;
   if (buffer.size === 0) return { flushed: 0 };
 
+  flushPromise = flushEntries();
+  try {
+    return await flushPromise;
+  } finally {
+    flushPromise = null;
+  }
+}
+
+async function flushEntries() {
   const entries = Array.from(buffer.entries());
   buffer.clear();
   lastFlushAt = Date.now();
 
-  const today = new Date().toISOString().slice(0, 10);
-
   for (const [key, count] of entries) {
-    const [, path, country, city] = key.split("|");
+    const [date, path, country, city] = key.split("|");
     try {
       // upsert: 存在则累加，不存在则创建
       const [record, created] = await VisitLog.findOrCreate({
-        where: { date: today, path, country: country || "", city: city || "" },
+        where: { date, path, country: country || "", city: city || "" },
         defaults: { count },
       });
       if (!created) {
