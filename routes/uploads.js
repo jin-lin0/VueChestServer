@@ -20,8 +20,21 @@ const types = {
   ]),
 };
 
+// 把用户提供的名字转成安全、可读的文件名（保留中英文和数字，去掉路径分隔符等危险字符）
+function slugify(input, fallback) {
+  const base = String(input || "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\.[^.]+$/, ""); // 去掉原始扩展名，避免出现双扩展名
+  const cleaned = base
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-") // 只保留字母/数字/点/下划线/连字符，其余转为 -
+    .replace(/^[-_.]+|[-_.]+$/g, "") // 去掉首尾的分隔符
+    .slice(0, 60);
+  return cleaned || fallback;
+}
+
 router.post("/presign", authMiddleware, async (req, res) => {
-  const { kind, contentType, size } = req.body;
+  const { kind, contentType, size, name } = req.body;
   if (
     !limits[kind] ||
     !types[kind]?.has(contentType) ||
@@ -36,7 +49,9 @@ router.post("/presign", authMiddleware, async (req, res) => {
 
   const extension =
     kind === "app" ? "js" : contentType.split("/")[1].replace("jpeg", "jpg");
-  const key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${crypto.randomUUID()}.${extension}`;
+  const readableName = slugify(name, kind === "avatar" ? "avatar" : "app");
+  const suffix = crypto.randomUUID().slice(0, 8); // 短随机后缀，防止同名覆盖
+  const key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${readableName}-${suffix}.${extension}`;
   const uploadUrl = await createUploadUrl(key, contentType);
   res.json({
     success: true,
