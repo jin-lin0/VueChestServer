@@ -4,6 +4,7 @@ const MarketApp = require("../models/marketApp");
 const User = require("../models/user");
 const { authMiddleware, optionalAuth } = require("../middleware/auth");
 const { adminOnly } = require("../middleware/superAdmin");
+const { publicUrl, headObject, deleteObject } = require("../utils/r2");
 
 const router = express.Router();
 
@@ -32,7 +33,8 @@ router.get("/apps", optionalAuth, async (req, res) => {
 
   const where = {};
   // 非管理员只看到已通过的应用
-  const isAdmin = req.user && (req.user.role === "admin" || req.user.role === "super_admin");
+  const isAdmin =
+    req.user && (req.user.role === "admin" || req.user.role === "super_admin");
   if (!isAdmin) {
     where.status = "approved";
   }
@@ -99,6 +101,8 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
       "isOfficial",
       "downloads",
       "status",
+      "fileKey",
+      "fileUrl",
       "uploadedBy",
       "createdAt",
       "updatedAt",
@@ -110,7 +114,8 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
   }
 
   // 非管理员且非上传者只能查看已通过的应用
-  const isAdmin = req.user && (req.user.role === "admin" || req.user.role === "super_admin");
+  const isAdmin =
+    req.user && (req.user.role === "admin" || req.user.role === "super_admin");
   const isOwner = req.user && req.user.id === app.uploadedBy;
   if (app.status !== "approved" && !isAdmin && !isOwner) {
     return res.status(404).json({ error: "应用不存在" });
@@ -131,7 +136,13 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
 // 下载应用 JS 包（只允许下载已通过的应用）
 router.get("/apps/:id/download", async (req, res) => {
   const app = await MarketApp.findByPk(req.params.id, {
-    attributes: ["fileContent", "name", "version", "status"],
+    attributes: [
+      "fileKey",
+      "fileUrl",
+      "name",
+      "version",
+      "status",
+    ],
   });
 
   if (!app) {
@@ -143,25 +154,47 @@ router.get("/apps/:id/download", async (req, res) => {
   }
 
   // 增加下载计数（异步，不阻塞）
-  MarketApp.increment("downloads", { by: 1, where: { id: req.params.id } }).catch(() => {});
+  MarketApp.increment("downloads", {
+    by: 1,
+    where: { id: req.params.id },
+  }).catch(() => {});
 
+  const fileUrl = app.fileKey ? app.fileUrl || publicUrl(app.fileKey) : null;
   res.json({
     success: true,
     data: {
       name: app.name,
       version: app.version,
-      fileContent: app.fileContent,
+      fileUrl,
     },
   });
 });
 
 // 上传应用（任何登录用户都可以上传，状态为 pending）
 router.post("/apps", authMiddleware, async (req, res) => {
-  const { name, icon, description, version, category, fileContent, screenshots, readme } =
-    req.body;
+  const {
+    name,
+    icon,
+    description,
+    version,
+    category,
+    fileKey,
+    fileSize,
+    screenshots,
+    readme,
+  } = req.body;
 
-  if (!name || !icon || !fileContent) {
-    return res.status(400).json({ error: "名称、图标和文件内容不能为空" });
+  if (
+    !name ||
+    !icon ||
+    !fileKey ||
+    !fileKey.startsWith(`apps/${req.user.id}/`)
+  ) {
+    return res.status(400).json({ error: "名称、图标和应用文件不能为空" });
+  }
+  const fileObject = await headObject(fileKey).catch(() => null);
+  if (!fileObject || !fileObject.ContentLength || fileObject.ContentLength > 10 * 1024 * 1024) {
+    return res.status(400).json({ error: "应用文件不存在或大小不符合要求" });
   }
 
   const app = await MarketApp.create({
@@ -171,8 +204,10 @@ router.post("/apps", authMiddleware, async (req, res) => {
     version: version || "1.0.0",
     author: req.user.username,
     category: category || "",
-    fileContent,
-    size: Buffer.byteLength(fileContent, "utf8"),
+    fileKey,
+    fileUrl: publicUrl(fileKey),
+    contentType: "application/javascript",
+    size: fileObject.ContentLength || Number(fileSize) || null,
     screenshots: screenshots ? JSON.stringify(screenshots) : null,
     readme: readme || "",
     uploadedBy: req.user.id,
@@ -182,27 +217,37 @@ router.post("/apps", authMiddleware, async (req, res) => {
   res.status(201).json({
     success: true,
     message: "上传成功，等待管理员审核",
-    data: { id: app.id, name: app.name, version: app.version, status: app.status },
+    data: {
+      id: app.id,
+      name: app.name,
+      version: app.version,
+      status: app.status,
+    },
   });
 });
 
 // 审核通过应用
-router.post("/apps/:id/approve", authMiddleware, adminOnly, async (req, res) => {
-  const app = await MarketApp.findByPk(req.params.id);
-  if (!app) {
-    return res.status(404).json({ error: "应用不存在" });
-  }
-  if (app.status === "approved") {
-    return res.status(400).json({ error: "应用已通过审核" });
-  }
+router.post(
+  "/apps/:id/approve",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const app = await MarketApp.findByPk(req.params.id);
+    if (!app) {
+      return res.status(404).json({ error: "应用不存在" });
+    }
+    if (app.status === "approved") {
+      return res.status(400).json({ error: "应用已通过审核" });
+    }
 
-  await app.update({ status: "approved" });
+    await app.update({ status: "approved" });
 
-  res.json({
-    success: true,
-    message: "应用已通过审核",
-  });
-});
+    res.json({
+      success: true,
+      message: "应用已通过审核",
+    });
+  },
+);
 
 // 审核拒绝应用
 router.post("/apps/:id/reject", authMiddleware, adminOnly, async (req, res) => {
@@ -230,8 +275,17 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     return res.status(404).json({ error: "应用不存在" });
   }
 
-  const { name, icon, description, version, category, fileContent, screenshots, readme, status } =
-    req.body;
+  const {
+    name,
+    icon,
+    description,
+    version,
+    category,
+    fileKey,
+    screenshots,
+    readme,
+    status,
+  } = req.body;
 
   const updateData = {};
   if (name !== undefined) updateData.name = name;
@@ -239,13 +293,17 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
   if (description !== undefined) updateData.description = description;
   if (version !== undefined) updateData.version = version;
   if (category !== undefined) updateData.category = category;
-  if (screenshots !== undefined) updateData.screenshots = JSON.stringify(screenshots);
+  if (screenshots !== undefined)
+    updateData.screenshots = JSON.stringify(screenshots);
   if (readme !== undefined) updateData.readme = readme;
   if (status !== undefined) updateData.status = status;
 
-  if (fileContent !== undefined) {
-    updateData.fileContent = fileContent;
-    updateData.size = Buffer.byteLength(fileContent, "utf8");
+  if (fileKey !== undefined) {
+    if (typeof fileKey !== "string" || !fileKey.startsWith("apps/")) {
+      return res.status(400).json({ error: "应用文件路径无效" });
+    }
+    updateData.fileKey = fileKey;
+    updateData.fileUrl = publicUrl(fileKey);
   }
 
   await app.update(updateData);
@@ -264,6 +322,7 @@ router.delete("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     return res.status(404).json({ error: "应用不存在" });
   }
 
+  if (app.fileKey) await deleteObject(app.fileKey).catch(() => {});
   await app.destroy();
 
   res.json({

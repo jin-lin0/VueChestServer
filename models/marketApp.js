@@ -34,9 +34,17 @@ const MarketApp = sequelize.define(
       type: DataTypes.STRING(50),
       allowNull: true,
     },
-    fileContent: {
-      type: DataTypes.TEXT('long'),
-      allowNull: false,
+    fileKey: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    fileUrl: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+    },
+    contentType: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
     },
     size: {
       type: DataTypes.INTEGER,

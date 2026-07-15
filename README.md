@@ -43,6 +43,11 @@ pnpm install
 | `DB_USER`     | 数据库用户   | `logyes`           |
 | `DB_PASSWORD` | 数据库密码   |                      |
 | `JWT_SECRET`  | JWT 签名密钥 |                      |
+| `R2_ACCOUNT_ID` | Cloudflare Account ID |                      |
+| `R2_ACCESS_KEY_ID` | R2 API Token Access Key |                      |
+| `R2_SECRET_ACCESS_KEY` | R2 API Token Secret |                      |
+| `R2_BUCKET_NAME` | R2 存储桶名称 | `vuechest` |
+| `R2_PUBLIC_URL` | R2 自定义域 | `https://files.020201.xyz` |
 
 ### 3. 启动服务
 
@@ -57,6 +62,16 @@ pnpm start
 默认监听 `http://localhost:3000`。
 
 验证码当前使用进程内存储，不需要 Redis，适合单实例部署。多实例或 Serverless 部署时，验证码可能跨实例失效，后续再考虑改为 Redis 或数据库存储。
+
+### R2 文件存储
+
+头像和应用包通过预签名 URL 直传 Cloudflare R2，数据库只保存对象 Key 和 URL。配置好环境变量后，首次升级运行：
+
+```bash
+pnpm run migrate:r2
+```
+
+R2 桶需要允许 `https://app.020201.xyz` 的 `PUT`、`GET`、`HEAD` 请求，并允许 `Content-Type` 请求头。预签名上传地址使用 S3 Endpoint，文件读取使用 `https://files.020201.xyz`。
 
 ## API 端点
 

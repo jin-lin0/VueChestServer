@@ -70,6 +70,9 @@ app.use("/api/users", usersRouter);
 const statsRouter = require("./routes/stats");
 app.use("/api/stats", statsRouter);
 
+const uploadsRouter = require("./routes/uploads");
+app.use("/api/uploads", uploadsRouter);
+
 // 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
 if (!process.env.VERCEL) {
   sequelize
