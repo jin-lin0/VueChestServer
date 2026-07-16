@@ -1,4 +1,6 @@
-require("dotenv").config();
+require("dotenv").config({
+  path: require("path").join(__dirname, "..", ".env"),
+});
 const sequelize = require("../config/database");
 const MarketApp = require("../models/marketApp");
 const { deleteObject } = require("../utils/r2");
