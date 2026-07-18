@@ -54,6 +54,10 @@ app.use("/api/messages", messagesRouter);
 const neteaseRouter = require("./routes/netease");
 app.use("/api/netease", neteaseRouter);
 
+// B站字幕提取路由
+const bilibiliRouter = require("./routes/bilibili");
+app.use("/api/bilibili", bilibiliRouter);
+
 // 面试题库路由 - 管理操作需要认证
 const questionsRouter = require("./routes/questions");
 app.use("/api/questions", questionsRouter);
