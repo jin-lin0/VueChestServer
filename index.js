@@ -66,10 +66,6 @@ app.use("/api/questions", questionsRouter);
 const marketRouter = require("./routes/market");
 app.use("/api/market", marketRouter);
 
-// 股票荐股路由（短线选股 / 市场环境）
-const stockRouter = require("./routes/stock");
-app.use("/api/stock", stockRouter);
-
 // 用户管理路由
 const usersRouter = require("./routes/users");
 app.use("/api/users", usersRouter);
