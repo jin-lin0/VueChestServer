@@ -7,7 +7,6 @@ const sequelize = require("./config/database");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 中间件
 app.use(cors());
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -38,17 +37,17 @@ app.get("/health", async (req, res) => {
       bufferRemaining: visitLogger.getBufferSize(),
     });
   } catch (e) {
-    res.json({ status: "ok", timestamp: new Date().toISOString(), error: e.message });
+    res.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      error: e.message,
+    });
   }
 });
 
 // 管理员认证路由
 const authRouter = require("./routes/auth");
 app.use("/api/auth", authRouter);
-
-// 消息路由
-const messagesRouter = require("./routes/messages");
-app.use("/api/messages", messagesRouter);
 
 // 网易云音乐 API 路由
 const neteaseRouter = require("./routes/netease");
@@ -76,6 +75,10 @@ app.use("/api/stats", statsRouter);
 
 const uploadsRouter = require("./routes/uploads");
 app.use("/api/uploads", uploadsRouter);
+
+// AI 对话路由
+const aiChatRouter = require("./routes/aiChat");
+app.use("/api/ai-chat", aiChatRouter);
 
 // 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
 if (!process.env.VERCEL) {
