@@ -4,7 +4,7 @@ const PROVIDER_META = [
     name: "OpenRouter",
     type: "openai",
     baseUrl: "https://openrouter.ai/api/v1/chat/completions",
-    models: [{ id: "openrouter/free", name: "Free Models Router (免费)" }],
+    models: [{ id: "openrouter/free", name: "Free Models" }],
     defaultModel: "openrouter/free",
   },
   {
