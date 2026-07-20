@@ -113,16 +113,6 @@ router.get("/artist", async (req, res) => {
   res.json(result.body);
 });
 
-// 热门歌手（推荐歌手）
-router.get("/top/artists", async (req, res) => {
-  const { limit = 50, offset = 0 } = req.query;
-  const result = await NeteaseCloudMusicApi.top_artists({
-    limit: parseInt(limit),
-    offset: parseInt(offset),
-  });
-  res.json(result.body);
-});
-
 // 分类歌手（按地区 area 筛选：华语 7 / 欧美 96 / 日本 8 / 韩国 16 / 其他 0）
 // 注意：NeteaseCloudMusicApi.artist_list 用 area 体系，cat 码会被忽略
 router.get("/artist/list", async (req, res) => {
