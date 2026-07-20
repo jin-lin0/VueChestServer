@@ -113,6 +113,27 @@ router.get("/artist", async (req, res) => {
   res.json(result.body);
 });
 
+// 热门歌手（推荐歌手）
+router.get("/top/artists", async (req, res) => {
+  const { limit = 50, offset = 0 } = req.query;
+  const result = await NeteaseCloudMusicApi.top_artists({
+    limit: parseInt(limit),
+    offset: parseInt(offset),
+  });
+  res.json(result.body);
+});
+
+// 分类歌手（cat 为网易云分类码：华语 1001 / 欧美 2001 / 日本 6001 / 韩国 7001 / 其他 4001）
+router.get("/artist/list", async (req, res) => {
+  const { cat = 1001, limit = 30, offset = 0 } = req.query;
+  const result = await NeteaseCloudMusicApi.artist_list({
+    cat: parseInt(cat),
+    limit: parseInt(limit),
+    offset: parseInt(offset),
+  });
+  res.json(result.body);
+});
+
 // 获取歌手专辑列表
 router.get("/artist/album", async (req, res) => {
   const { id, limit = 30, offset = 0 } = req.query;
