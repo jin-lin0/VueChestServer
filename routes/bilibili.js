@@ -99,6 +99,15 @@ async function sign(params) {
   return { ...merged, w_rid: md5(query + mixinKey) };
 }
 
+// 解析最终生效的 SESSDATA：优先用用户自己填的，其次回落到服务端 .env 里配置的
+// 公共 SESSDATA（BILI_SESSDATA）。这样用户不填也能解锁需登录才可见的 AI 字幕，
+// 而愿意填的用户仍走自己的账号（分摊风控压力、不共用站长凭证）。
+function resolveSessdata(sessdata) {
+  const own = (sessdata || "").trim();
+  if (own) return own;
+  return (process.env.BILI_SESSDATA || "").trim();
+}
+
 // 公共请求头；带 sessdata 时附上 Cookie，可解锁需登录才可见的 AI 字幕
 function buildHeaders(sessdata) {
   const headers = { "User-Agent": UA, Referer: REFERER };
@@ -177,7 +186,9 @@ async function extractOnePage(bvid, cid, sessdata) {
   // 没有字幕：区分"需登录才能看"和"真的没有"，给出不同提示
   if (!subs.length) {
     if (subtitle.need_login_subtitle) {
-      throw new Error("该分P字幕需登录后查看，请在下方填入 SESSDATA 后重试");
+      throw new Error(
+        "该分P字幕需登录后查看，可在「高级」里填入你自己的 SESSDATA 后重试",
+      );
     }
     throw new Error("该分P暂无字幕（既无官方字幕也无 AI 字幕）");
   }
@@ -243,7 +254,7 @@ router.post("/info", async (req, res) => {
   if (!bvid) {
     return res.status(400).json({ error: "请输入有效的 B站视频链接（需包含 BV 号）" });
   }
-  const { title, pages } = await fetchView(bvid, sessdata);
+  const { title, pages } = await fetchView(bvid, resolveSessdata(sessdata));
   res.json({ success: true, data: { bvid, title, pages } });
 });
 
@@ -254,7 +265,7 @@ router.post("/subtitle", async (req, res) => {
   if (!bvid) {
     return res.status(400).json({ error: "缺少 bvid，请先解析视频" });
   }
-  const data = await extractSubtitle(bvid, sessdata, {
+  const data = await extractSubtitle(bvid, resolveSessdata(sessdata), {
     cid: cid ? Number(cid) : undefined,
     all: !!all,
   });

@@ -80,6 +80,10 @@ app.use("/api/uploads", uploadsRouter);
 const aiChatRouter = require("./routes/aiChat");
 app.use("/api/ai-chat", aiChatRouter);
 
+// 音乐收藏分组路由（需登录）
+const musicFavoritesRouter = require("./routes/musicFavorites");
+app.use("/api/music-favorites", musicFavoritesRouter);
+
 // 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
 if (!process.env.VERCEL) {
   sequelize

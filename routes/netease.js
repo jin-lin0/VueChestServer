@@ -103,4 +103,58 @@ router.get("/toplist", async (req, res) => {
   res.json(result.body);
 });
 
+// 获取歌手详情（含热门歌曲 hotSongs）
+router.get("/artist", async (req, res) => {
+  const { id } = req.query;
+  if (!id) {
+    return res.status(400).json({ error: "歌手ID不能为空" });
+  }
+  const result = await NeteaseCloudMusicApi.artists({ id });
+  res.json(result.body);
+});
+
+// 获取歌手专辑列表
+router.get("/artist/album", async (req, res) => {
+  const { id, limit = 30, offset = 0 } = req.query;
+  if (!id) {
+    return res.status(400).json({ error: "歌手ID不能为空" });
+  }
+  const result = await NeteaseCloudMusicApi.artist_album({
+    id,
+    limit: parseInt(limit),
+    offset: parseInt(offset),
+  });
+  res.json(result.body);
+});
+
+// 获取专辑详情（含歌曲 songs）
+router.get("/album", async (req, res) => {
+  const { id } = req.query;
+  if (!id) {
+    return res.status(400).json({ error: "专辑ID不能为空" });
+  }
+  const result = await NeteaseCloudMusicApi.album({ id });
+  res.json(result.body);
+});
+
+// 获取相似歌曲
+router.get("/simi/song", async (req, res) => {
+  const { id, limit = 20, offset = 0 } = req.query;
+  if (!id) {
+    return res.status(400).json({ error: "歌曲ID不能为空" });
+  }
+  const result = await NeteaseCloudMusicApi.simi_song({
+    id,
+    limit: parseInt(limit),
+    offset: parseInt(offset),
+  });
+  res.json(result.body);
+});
+
+// 获取歌单分类
+router.get("/playlist/catlist", async (req, res) => {
+  const result = await NeteaseCloudMusicApi.playlist_catlist();
+  res.json(result.body);
+});
+
 module.exports = router;
