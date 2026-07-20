@@ -123,11 +123,12 @@ router.get("/top/artists", async (req, res) => {
   res.json(result.body);
 });
 
-// 分类歌手（cat 为网易云分类码：华语 1001 / 欧美 2001 / 日本 6001 / 韩国 7001 / 其他 4001）
+// 分类歌手（按地区 area 筛选：华语 7 / 欧美 96 / 日本 8 / 韩国 16 / 其他 0）
+// 注意：NeteaseCloudMusicApi.artist_list 用 area 体系，cat 码会被忽略
 router.get("/artist/list", async (req, res) => {
-  const { cat = 1001, limit = 30, offset = 0 } = req.query;
+  const { area = 7, limit = 30, offset = 0 } = req.query;
   const result = await NeteaseCloudMusicApi.artist_list({
-    cat: parseInt(cat),
+    area: parseInt(area),
     limit: parseInt(limit),
     offset: parseInt(offset),
   });
