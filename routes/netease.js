@@ -77,7 +77,9 @@ router.get("/top/song", async (req, res) => {
 // 获取推荐歌单
 router.get("/personalized", async (req, res) => {
   const { limit = 30 } = req.query;
-  const result = await NeteaseCloudMusicApi.personalized({ limit: parseInt(limit) });
+  const result = await NeteaseCloudMusicApi.personalized({
+    limit: parseInt(limit),
+  });
   res.json(result.body);
 });
 

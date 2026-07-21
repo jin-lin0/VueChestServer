@@ -1,8 +1,15 @@
-const { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const {
+  S3Client,
+  PutObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand,
+} = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const BUCKET = process.env.R2_BUCKET_NAME || "vuechest";
-const PUBLIC_URL = (process.env.R2_PUBLIC_URL || "https://files.020201.xyz").replace(/\/$/, "");
+const PUBLIC_URL = (
+  process.env.R2_PUBLIC_URL || "https://files.020201.xyz"
+).replace(/\/$/, "");
 
 let client;
 function getClient() {
@@ -14,7 +21,10 @@ function getClient() {
   client = new S3Client({
     region: "auto",
     endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY },
+    credentials: {
+      accessKeyId: R2_ACCESS_KEY_ID,
+      secretAccessKey: R2_SECRET_ACCESS_KEY,
+    },
   });
   return client;
 }
@@ -24,7 +34,11 @@ function publicUrl(key) {
 }
 
 async function createUploadUrl(key, contentType) {
-  const command = new PutObjectCommand({ Bucket: BUCKET, Key: key, ContentType: contentType });
+  const command = new PutObjectCommand({
+    Bucket: BUCKET,
+    Key: key,
+    ContentType: contentType,
+  });
   return getSignedUrl(getClient(), command, { expiresIn: 600 });
 }
 
@@ -33,7 +47,9 @@ async function headObject(key) {
 }
 
 async function deleteObject(key) {
-  return getClient().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+  return getClient().send(
+    new DeleteObjectCommand({ Bucket: BUCKET, Key: key }),
+  );
 }
 
 module.exports = { createUploadUrl, headObject, deleteObject, publicUrl };

@@ -8,7 +8,9 @@
 //   头像:  avatars/{userId}/{slug(username)}-{id}.{ext}
 // 例:  apps/123/我的天气应用-v1.2.0-45.js  /  avatars/7/hejinlin-7.jpg
 
-require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
+require("dotenv").config({
+  path: require("path").join(__dirname, "..", ".env"),
+});
 const {
   S3Client,
   ListObjectsV2Command,

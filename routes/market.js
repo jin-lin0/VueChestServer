@@ -129,13 +129,7 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
 // 下载应用 JS 包（只允许下载已通过的应用）
 router.get("/apps/:id/download", async (req, res) => {
   const app = await MarketApp.findByPk(req.params.id, {
-    attributes: [
-      "fileKey",
-      "fileUrl",
-      "name",
-      "version",
-      "status",
-    ],
+    attributes: ["fileKey", "fileUrl", "name", "version", "status"],
   });
 
   if (!app) {
@@ -186,7 +180,11 @@ router.post("/apps", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "名称、图标和应用文件不能为空" });
   }
   const fileObject = await headObject(fileKey).catch(() => null);
-  if (!fileObject || !fileObject.ContentLength || fileObject.ContentLength > 10 * 1024 * 1024) {
+  if (
+    !fileObject ||
+    !fileObject.ContentLength ||
+    fileObject.ContentLength > 10 * 1024 * 1024
+  ) {
     return res.status(400).json({ error: "应用文件不存在或大小不符合要求" });
   }
 

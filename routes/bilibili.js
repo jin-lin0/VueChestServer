@@ -195,8 +195,9 @@ async function extractOnePage(bvid, cid, sessdata) {
 
   // 2. 选字幕轨道：按优先级取第一条命中的轨道，均无则兜底第一条
   const sub =
-    PREFERRED_LANGS.map((lan) => subs.find((s) => s.lan === lan)).find(Boolean) ||
-    subs[0];
+    PREFERRED_LANGS.map((lan) => subs.find((s) => s.lan === lan)).find(
+      Boolean,
+    ) || subs[0];
 
   // 3. 下载并解析 bcc：subtitle_url 是协议相对地址（以 // 开头），补成 https
   const bccUrl = "https:" + sub.subtitle_url;
@@ -252,7 +253,9 @@ router.post("/info", async (req, res) => {
   const { url, sessdata } = req.body || {};
   const bvid = (url || "").match(/BV\w+/)?.[0];
   if (!bvid) {
-    return res.status(400).json({ error: "请输入有效的 B站视频链接（需包含 BV 号）" });
+    return res
+      .status(400)
+      .json({ error: "请输入有效的 B站视频链接（需包含 BV 号）" });
   }
   const { title, pages } = await fetchView(bvid, resolveSessdata(sessdata));
   res.json({ success: true, data: { bvid, title, pages } });

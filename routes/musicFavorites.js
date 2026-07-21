@@ -46,7 +46,9 @@ router.get("/groups", authMiddleware, async (req, res) => {
     const groups = await loadGroupsWithSongs(req.user.id);
     res.json({ success: true, data: groups });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message, code: "SERVER_ERROR" });
+    res
+      .status(500)
+      .json({ success: false, error: e.message, code: "SERVER_ERROR" });
   }
 });
 
@@ -55,10 +57,18 @@ router.post("/groups", authMiddleware, async (req, res) => {
   try {
     const name = (req.body?.name || "").trim();
     if (!name) {
-      return res.status(400).json({ success: false, error: "分组名不能为空", code: "VALIDATION" });
+      return res
+        .status(400)
+        .json({ success: false, error: "分组名不能为空", code: "VALIDATION" });
     }
     if (name.length > 20) {
-      return res.status(400).json({ success: false, error: "分组名最多 20 字", code: "VALIDATION" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "分组名最多 20 字",
+          code: "VALIDATION",
+        });
     }
     const group = await MusicFavoriteGroup.create({
       userId: req.user.id,
@@ -70,7 +80,9 @@ router.post("/groups", authMiddleware, async (req, res) => {
       data: { id: group.id, name: group.name, isDefault: false, songs: [] },
     });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message, code: "SERVER_ERROR" });
+    res
+      .status(500)
+      .json({ success: false, error: e.message, code: "SERVER_ERROR" });
   }
 });
 
@@ -82,16 +94,26 @@ router.delete("/groups/:id", authMiddleware, async (req, res) => {
       where: { id: groupId, userId: req.user.id },
     });
     if (!group) {
-      return res.status(404).json({ success: false, error: "分组不存在", code: "NOT_FOUND" });
+      return res
+        .status(404)
+        .json({ success: false, error: "分组不存在", code: "NOT_FOUND" });
     }
     if (group.isDefault) {
-      return res.status(400).json({ success: false, error: "默认分组不可删除", code: "VALIDATION" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "默认分组不可删除",
+          code: "VALIDATION",
+        });
     }
     await MusicFavoriteSong.destroy({ where: { groupId } });
     await group.destroy();
     res.json({ success: true, data: { id: groupId } });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message, code: "SERVER_ERROR" });
+    res
+      .status(500)
+      .json({ success: false, error: e.message, code: "SERVER_ERROR" });
   }
 });
 
@@ -101,13 +123,17 @@ router.post("/groups/:id/songs", authMiddleware, async (req, res) => {
     const groupId = parseInt(req.params.id);
     const song = req.body?.song;
     if (!song || !song.id) {
-      return res.status(400).json({ success: false, error: "歌曲数据无效", code: "VALIDATION" });
+      return res
+        .status(400)
+        .json({ success: false, error: "歌曲数据无效", code: "VALIDATION" });
     }
     const group = await MusicFavoriteGroup.findOne({
       where: { id: groupId, userId: req.user.id },
     });
     if (!group) {
-      return res.status(404).json({ success: false, error: "分组不存在", code: "NOT_FOUND" });
+      return res
+        .status(404)
+        .json({ success: false, error: "分组不存在", code: "NOT_FOUND" });
     }
 
     const [row] = await MusicFavoriteSong.findOrCreate({
@@ -125,7 +151,9 @@ router.post("/groups/:id/songs", authMiddleware, async (req, res) => {
     if (e.name === "SequelizeUniqueConstraintError") {
       return res.json({ success: true, data: req.body?.song });
     }
-    res.status(500).json({ success: false, error: e.message, code: "SERVER_ERROR" });
+    res
+      .status(500)
+      .json({ success: false, error: e.message, code: "SERVER_ERROR" });
   }
 });
 
@@ -138,12 +166,16 @@ router.delete("/groups/:id/songs/:songId", authMiddleware, async (req, res) => {
       where: { id: groupId, userId: req.user.id },
     });
     if (!group) {
-      return res.status(404).json({ success: false, error: "分组不存在", code: "NOT_FOUND" });
+      return res
+        .status(404)
+        .json({ success: false, error: "分组不存在", code: "NOT_FOUND" });
     }
     await MusicFavoriteSong.destroy({ where: { groupId, songId } });
     res.json({ success: true, data: { groupId, songId } });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message, code: "SERVER_ERROR" });
+    res
+      .status(500)
+      .json({ success: false, error: e.message, code: "SERVER_ERROR" });
   }
 });
 

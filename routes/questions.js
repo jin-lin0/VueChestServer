@@ -41,20 +41,25 @@ router.put("/categories/:id", authMiddleware, adminOnly, async (req, res) => {
 });
 
 // 删除分类
-router.delete("/categories/:id", authMiddleware, adminOnly, async (req, res) => {
-  const category = await Category.findByPk(req.params.id);
-  if (!category) {
-    return res.status(404).json({ error: "分类不存在" });
-  }
-  const questionCount = await Question.count({
-    where: { categoryId: req.params.id },
-  });
-  if (questionCount > 0) {
-    return res.status(400).json({ error: "该分类下还有题目，无法删除" });
-  }
-  await category.destroy();
-  res.json({ message: "删除成功" });
-});
+router.delete(
+  "/categories/:id",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const category = await Category.findByPk(req.params.id);
+    if (!category) {
+      return res.status(404).json({ error: "分类不存在" });
+    }
+    const questionCount = await Question.count({
+      where: { categoryId: req.params.id },
+    });
+    if (questionCount > 0) {
+      return res.status(400).json({ error: "该分类下还有题目，无法删除" });
+    }
+    await category.destroy();
+    res.json({ message: "删除成功" });
+  },
+);
 
 // 获取题目列表（支持筛选和搜索）
 router.get("/", async (req, res) => {
@@ -148,7 +153,10 @@ router.put("/:id", authMiddleware, adminOnly, async (req, res) => {
   if (req.body.title !== undefined && !req.body.title.trim()) {
     return res.status(400).json({ error: "题目标题不能为空" });
   }
-  if (req.body.difficulty && !VALID_DIFFICULTIES.includes(req.body.difficulty)) {
+  if (
+    req.body.difficulty &&
+    !VALID_DIFFICULTIES.includes(req.body.difficulty)
+  ) {
     return res.status(400).json({ error: "无效的难度等级" });
   }
   await question.update(req.body);
@@ -168,7 +176,11 @@ router.delete("/:id", authMiddleware, adminOnly, async (req, res) => {
 // 批量导入题目
 router.post("/import", authMiddleware, adminOnly, async (req, res) => {
   const { questions } = req.body;
-  if (!Array.isArray(questions) || questions.length === 0 || questions.length > 500) {
+  if (
+    !Array.isArray(questions) ||
+    questions.length === 0 ||
+    questions.length > 500
+  ) {
     return res.status(400).json({ error: "请提供有效的题目数组" });
   }
   const created = await Question.bulkCreate(questions);

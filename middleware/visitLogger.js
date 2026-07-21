@@ -8,7 +8,9 @@ function getClientIP(req) {
 
 function isLocalIP(ip) {
   if (!ip) return true;
-  return /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|::ffff:127\.|localhost$)/.test(ip);
+  return /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|::ffff:127\.|localhost$)/.test(
+    ip,
+  );
 }
 
 function getGeoFromFrontend(headers) {
@@ -70,7 +72,8 @@ async function flushEntries() {
 
 // 中间件：只更新内存计数器，不阻塞请求
 function visitLogger(req, res, next) {
-  if (!req.path.startsWith("/api/") || req.path.startsWith("/api/stats")) return next();
+  if (!req.path.startsWith("/api/") || req.path.startsWith("/api/stats"))
+    return next();
 
   const ip = getClientIP(req);
   if (isLocalIP(ip)) return next();
