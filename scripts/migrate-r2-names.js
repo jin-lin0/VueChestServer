@@ -17,6 +17,7 @@ const {
 } = require("@aws-sdk/client-s3");
 const mysql = require("mysql2/promise");
 const fs = require("fs");
+const slugify = require("../utils/slugify");
 
 const BUCKET = process.env.R2_BUCKET_NAME || "vuechest";
 const PUBLIC_URL = (
@@ -33,18 +34,6 @@ const client = new S3Client({
   },
 });
 
-// 与线上 presign 逻辑一致的 slugify: 保留中英文/数字, 其余转 -
-function slugify(input, fallback) {
-  const base = String(input || "")
-    .normalize("NFKC")
-    .trim()
-    .replace(/\.[^.]+$/, "");
-  const cleaned = base
-    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
-    .replace(/^[-_.]+|[-_.]+$/g, "")
-    .slice(0, 60);
-  return cleaned || fallback;
-}
 const publicUrl = (key) => `${PUBLIC_URL}/${key}`;
 const copySource = (key) =>
   `${BUCKET}/${key.split("/").map(encodeURIComponent).join("/")}`;

@@ -1,6 +1,5 @@
 const express = require("express");
 const router = express.Router();
-const { Op } = require("sequelize");
 const { authMiddleware } = require("../middleware/auth");
 const MusicFavoriteGroup = require("../models/musicFavoriteGroup");
 const MusicFavoriteSong = require("../models/musicFavoriteSong");

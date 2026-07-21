@@ -1,4 +1,5 @@
 const express = require("express");
+const { Op } = require("sequelize");
 const router = express.Router();
 const AIChatConversation = require("../models/aiChatConversation");
 const AIChatMessage = require("../models/aiChatMessage");
@@ -201,7 +202,6 @@ router.post("/chat", async (req, res) => {
 });
 
 router.get("/conversations/:id/messages", async (req, res) => {
-  const { Op } = require("sequelize");
   const conv = await AIChatConversation.findByPk(req.params.id);
   const rows = await AIChatMessage.findAll({
     where: { conversationId: req.params.id, role: { [Op.ne]: "system" } },

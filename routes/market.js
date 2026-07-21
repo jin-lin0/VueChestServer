@@ -1,14 +1,11 @@
 const express = require("express");
 const { Op, fn, col } = require("sequelize");
 const MarketApp = require("../models/marketApp");
-const User = require("../models/user");
 const { authMiddleware, optionalAuth } = require("../middleware/auth");
-const { adminOnly } = require("../middleware/superAdmin");
+const { adminOnly, isAdmin } = require("../middleware/superAdmin");
 const { publicUrl, headObject, deleteObject } = require("../utils/r2");
 
 const router = express.Router();
-
-MarketApp.belongsTo(User, { foreignKey: "uploadedBy", as: "uploader" });
 
 // 获取分类列表（只统计已通过的应用，单次 GROUP BY 查询，避免 N+1）
 router.get("/categories", async (req, res) => {
@@ -33,9 +30,7 @@ router.get("/apps", optionalAuth, async (req, res) => {
 
   const where = {};
   // 非管理员只看到已通过的应用
-  const isAdmin =
-    req.user && (req.user.role === "admin" || req.user.role === "super_admin");
-  if (!isAdmin) {
+  if (!isAdmin(req.user)) {
     where.status = "approved";
   }
   if (category) {
@@ -114,10 +109,8 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
   }
 
   // 非管理员且非上传者只能查看已通过的应用
-  const isAdmin =
-    req.user && (req.user.role === "admin" || req.user.role === "super_admin");
   const isOwner = req.user && req.user.id === app.uploadedBy;
-  if (app.status !== "approved" && !isAdmin && !isOwner) {
+  if (app.status !== "approved" && !isAdmin(req.user) && !isOwner) {
     return res.status(404).json({ error: "应用不存在" });
   }
 

@@ -2,6 +2,7 @@ const express = require("express");
 const { Op } = require("sequelize");
 const VisitLog = require("../models/visitLog");
 const MarketApp = require("../models/marketApp");
+const Question = require("../models/question");
 const { authMiddleware } = require("../middleware/auth");
 const { adminOnly } = require("../middleware/superAdmin");
 
@@ -23,12 +24,7 @@ async function totalCreatedCount(model) {
 
 router.get("/dashboard", authMiddleware, adminOnly, async (req, res) => {
   const todayApps = await todayCreatedCount(MarketApp);
-
-  let todayQuestions = 0;
-  try {
-    const Question = require("../models/question");
-    todayQuestions = await todayCreatedCount(Question);
-  } catch {}
+  const todayQuestions = await todayCreatedCount(Question);
 
   const todayVisits = await VisitLog.sum("count", {
     where: { date: todayStart() },

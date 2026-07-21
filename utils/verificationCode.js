@@ -1,5 +1,6 @@
 // 验证码内存存储（带 TTL + 重发冷却）
 // 注意：内存存储适用于单实例部署；多实例/Serverless 环境建议改用 Redis 或数据库存储。
+const crypto = require("crypto");
 const store = new Map(); // key: email → { code, expiresAt, sentAt }
 
 const CODE_TTL_MS = 5 * 60 * 1000; // 验证码有效期 5 分钟
@@ -12,7 +13,6 @@ const MAX_VERIFY_ATTEMPTS = 5;
  */
 function generate6DigitCode() {
   // crypto 随机，避免 Math.random 可预测
-  const crypto = require("crypto");
   const buf = crypto.randomBytes(3);
   const num = buf.readUIntBE(0, 3) % 1000000;
   return String(num).padStart(6, "0");
