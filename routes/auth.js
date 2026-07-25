@@ -80,6 +80,15 @@ router.post("/register", async (req, res) => {
     });
   }
 
+  // 用户名禁止邮箱格式：登录时靠「是否像邮箱」分流查 email/username，
+  // 若用户名也是邮箱格式会造成歧义，故注册即禁止。
+  if (EMAIL_RE.test(username)) {
+    return res.status(400).json({
+      error: "用户名不能是邮箱格式，请使用普通用户名",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
   if (password.length < 6) {
     return res.status(400).json({
       error: "密码至少需要6个字符",
@@ -254,21 +263,26 @@ router.post("/reset-password", async (req, res) => {
 });
 
 // 统一登录（所有角色：user / admin / super_admin）
+// 支持「用户名 + 密码」或「邮箱 + 密码」登录：自动识别 identifier 是否为邮箱格式
 router.post("/login", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, email, password } = req.body;
+  const identifier = (username || email || "").toString().trim();
 
-  if (!username || !password) {
+  if (!identifier || !password) {
     return res.status(400).json({
-      error: "用户名和密码不能为空",
+      error: "用户名/邮箱和密码不能为空",
       code: "VALIDATION_ERROR",
     });
   }
 
-  const user = await User.findOne({ where: { username } });
+  // 识别为邮箱则按 email 查，否则按 username 查
+  const query = EMAIL_RE.test(identifier) ? { email: identifier } : { username: identifier };
+
+  const user = await User.findOne({ where: query });
 
   if (!user) {
     return res.status(401).json({
-      error: "用户名或密码错误",
+      error: "用户名/邮箱或密码错误",
       code: "INVALID_CREDENTIALS",
     });
   }
@@ -284,7 +298,7 @@ router.post("/login", async (req, res) => {
 
   if (!isValidPassword) {
     return res.status(401).json({
-      error: "用户名或密码错误",
+      error: "用户名/邮箱或密码错误",
       code: "INVALID_CREDENTIALS",
     });
   }
