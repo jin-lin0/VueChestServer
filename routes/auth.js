@@ -2,7 +2,7 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
 const { authMiddleware } = require("../middleware/auth");
-const { sendVerificationEmail } = require("../utils/mail");
+const { sendVerificationEmail, sendResetCodeEmail } = require("../utils/mail");
 const {
   createCode,
   verifyCode,
@@ -153,6 +153,103 @@ router.post("/register", async (req, res) => {
       user: user.toJSON(),
       expiresIn: 7 * 24 * 60 * 60,
     },
+  });
+});
+
+// 发送重置密码验证码
+router.post("/forgot-password", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email || !EMAIL_RE.test(email)) {
+    return res.status(400).json({
+      error: "请输入有效的邮箱地址",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
+  const user = await User.findOne({ where: { email } });
+  if (!user) {
+    return res.status(404).json({
+      error: "该邮箱未注册",
+      code: "EMAIL_NOT_FOUND",
+    });
+  }
+
+  const { code, cooldown } = createCode(email, "reset");
+  if (cooldown > 0) {
+    return res.status(429).json({
+      error: `验证码已发送，请 ${Math.ceil(cooldown / 1000)} 秒后再试`,
+      code: "RATE_LIMITED",
+      retryAfter: Math.ceil(cooldown / 1000),
+    });
+  }
+
+  const result = await sendResetCodeEmail(email, code);
+  if (!result.success) {
+    return res.status(502).json({
+      error: `验证码发送失败：${result.error}`,
+      code: "MAIL_SEND_FAILED",
+    });
+  }
+
+  res.json({
+    success: true,
+    message: "重置验证码已发送，请查收邮箱",
+    data: {
+      expiresIn: Math.floor(CODE_TTL_MS / 1000),
+      cooldown: Math.floor(RESEND_COOLDOWN_MS / 1000),
+    },
+  });
+});
+
+// 重置密码（凭邮箱验证码）
+router.post("/reset-password", async (req, res) => {
+  const { email, code, newPassword } = req.body;
+
+  if (!email || !EMAIL_RE.test(email)) {
+    return res.status(400).json({
+      error: "请输入有效的邮箱地址",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
+  if (!code) {
+    return res.status(400).json({
+      error: "请输入验证码",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({
+      error: "新密码至少需要6个字符",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
+  const user = await User.findOne({ where: { email } });
+  if (!user) {
+    return res.status(404).json({
+      error: "该邮箱未注册",
+      code: "EMAIL_NOT_FOUND",
+    });
+  }
+
+  const verify = verifyCode(email, code, "reset");
+  if (!verify.valid) {
+    return res.status(400).json({
+      error: verify.reason,
+      code: "CODE_INVALID",
+    });
+  }
+
+  // beforeUpdate 钩子会自动对明文密码做 bcrypt 哈希
+  user.password = newPassword;
+  await user.save();
+
+  res.json({
+    success: true,
+    message: "密码重置成功，请使用新密码登录",
   });
 });
 

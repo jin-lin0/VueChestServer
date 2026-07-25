@@ -28,12 +28,16 @@ function getFromAddress() {
 }
 
 /**
- * 发送注册验证码邮件
- * @param {string} to 收件人邮箱
- * @param {string} code 6 位验证码
+ * 发送验证码邮件（注册 / 重置密码共用模板）
+ * @param {object} opts
+ * @param {string} opts.to 收件人邮箱
+ * @param {string} opts.code 6 位验证码
+ * @param {string} opts.subject 邮件标题
+ * @param {string} opts.heading 主标题
+ * @param {string} opts.description 引导文案
  * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
  */
-async function sendVerificationEmail(to, code) {
+async function sendCodeMail({ to, code, subject, heading, description }) {
   try {
     const resend = getClient();
     const from = getFromAddress();
@@ -41,12 +45,12 @@ async function sendVerificationEmail(to, code) {
     const { data, error } = await resend.emails.send({
       from,
       to,
-      subject: "【VueChest】注册验证码",
+      subject,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #f8fafc; border-radius: 12px;">
           <div style="background: white; padding: 32px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
-            <h2 style="margin: 0 0 8px; color: #1f2937;">VueChest 注册验证码</h2>
-            <p style="color: #6b7280; margin: 0 0 24px; font-size: 14px;">您正在注册 VueChest 账号，请使用以下验证码完成验证：</p>
+            <h2 style="margin: 0 0 8px; color: #1f2937;">${heading}</h2>
+            <p style="color: #6b7280; margin: 0 0 24px; font-size: 14px;">${description}</p>
             <div style="text-align: center; background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 10px; padding: 20px; margin: 24px 0;">
               <span style="font-size: 32px; font-weight: 700; color: white; letter-spacing: 8px;">${code}</span>
             </div>
@@ -69,4 +73,36 @@ async function sendVerificationEmail(to, code) {
   }
 }
 
-module.exports = { sendVerificationEmail, getFromAddress };
+/**
+ * 发送注册验证码邮件
+ * @param {string} to 收件人邮箱
+ * @param {string} code 6 位验证码
+ * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
+ */
+async function sendVerificationEmail(to, code) {
+  return sendCodeMail({
+    to,
+    code,
+    subject: "【VueChest】注册验证码",
+    heading: "VueChest 注册验证码",
+    description: "您正在注册 VueChest 账号，请使用以下验证码完成验证：",
+  });
+}
+
+/**
+ * 发送重置密码验证码邮件
+ * @param {string} to 收件人邮箱
+ * @param {string} code 6 位验证码
+ * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
+ */
+async function sendResetCodeEmail(to, code) {
+  return sendCodeMail({
+    to,
+    code,
+    subject: "【VueChest】重置密码验证码",
+    heading: "VueChest 重置密码验证码",
+    description: "您正在重置 VueChest 账号密码，请使用以下验证码完成验证：",
+  });
+}
+
+module.exports = { sendVerificationEmail, sendResetCodeEmail, getFromAddress };

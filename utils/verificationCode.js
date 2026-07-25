@@ -1,7 +1,7 @@
 // 验证码内存存储（带 TTL + 重发冷却）
 // 注意：内存存储适用于单实例部署；多实例/Serverless 环境建议改用 Redis 或数据库存储。
 const crypto = require("crypto");
-const store = new Map(); // key: email → { code, expiresAt, sentAt }
+const store = new Map(); // key: `${type}:${email}` → { code, expiresAt, sentAt }
 
 const CODE_TTL_MS = 5 * 60 * 1000; // 验证码有效期 5 分钟
 const RESEND_COOLDOWN_MS = 60 * 1000; // 重发冷却 60 秒
@@ -21,13 +21,14 @@ function generate6DigitCode() {
 /**
  * 生成并存入验证码
  * @param {string} email
+ * @param {string} [type] 用途命名空间，隔离不同场景的码（如 'register' / 'reset'）
  * @returns {{ code: string, cooldown: number }} cooldown 为还需等待的毫秒数（0 表示可发）
  */
-function createCode(email) {
-  const emailKey = email.toLowerCase().trim();
+function createCode(email, type = "register") {
+  const key = `${type}:${email.toLowerCase().trim()}`;
   const now = Date.now();
 
-  const existing = store.get(emailKey);
+  const existing = store.get(key);
   if (existing && now - existing.sentAt < RESEND_COOLDOWN_MS) {
     return {
       code: existing.code,
@@ -36,7 +37,7 @@ function createCode(email) {
   }
 
   const code = generate6DigitCode();
-  store.set(emailKey, {
+  store.set(key, {
     code,
     expiresAt: now + CODE_TTL_MS,
     sentAt: now,
@@ -49,32 +50,33 @@ function createCode(email) {
  * 校验验证码（校验通过后会清除，一次性使用）
  * @param {string} email
  * @param {string} code
+ * @param {string} [type] 用途命名空间，须与 createCode 时一致
  * @returns {{ valid: boolean, reason?: string }}
  */
-function verifyCode(email, code) {
-  const emailKey = email.toLowerCase().trim();
-  const entry = store.get(emailKey);
+function verifyCode(email, code, type = "register") {
+  const key = `${type}:${email.toLowerCase().trim()}`;
+  const entry = store.get(key);
 
   if (!entry) {
     return { valid: false, reason: "请先获取验证码" };
   }
 
   if (Date.now() > entry.expiresAt) {
-    store.delete(emailKey);
+    store.delete(key);
     return { valid: false, reason: "验证码已过期，请重新获取" };
   }
 
   entry.attempts += 1;
   if (entry.code !== String(code).trim()) {
     if (entry.attempts >= MAX_VERIFY_ATTEMPTS) {
-      store.delete(emailKey);
+      store.delete(key);
       return { valid: false, reason: "验证码错误次数过多，请重新获取验证码" };
     }
     return { valid: false, reason: "验证码错误" };
   }
 
   // 校验通过，清除记录
-  store.delete(emailKey);
+  store.delete(key);
   return { valid: true };
 }
 
