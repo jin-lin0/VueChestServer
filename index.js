@@ -103,7 +103,9 @@ if (!process.env.VERCEL) {
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error("未捕获错误:", err);
+  // 统一按响应契约返回 { success:false, error }，避免裸奔 500 / 原始报错文本
   res.status(err.status || 500).json({
+    success: false,
     error: err.message || "服务器内部错误",
     code: err.code || "SERVER_ERROR",
   });
