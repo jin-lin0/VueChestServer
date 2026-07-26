@@ -339,6 +339,56 @@ router.get("/me", authMiddleware, async (req, res) => {
   });
 });
 
+// 修改个人资料（当前支持修改登录用户名/昵称）
+router.put("/me", authMiddleware, async (req, res) => {
+  const { username } = req.body || {};
+
+  if (typeof username !== "string" || !username.trim()) {
+    return res.status(400).json({
+      error: "昵称不能为空",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
+  const trimmed = username.trim();
+
+  if (trimmed.length < 3) {
+    return res.status(400).json({
+      error: "昵称至少需要 3 个字符",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
+  // 与注册保持一致：用户名禁止邮箱格式，避免登录分流歧义
+  if (EMAIL_RE.test(trimmed)) {
+    return res.status(400).json({
+      error: "昵称不能是邮箱格式，请使用普通昵称",
+      code: "VALIDATION_ERROR",
+    });
+  }
+
+  // 唯一性校验，排除当前用户本人
+  const conflict = await User.findOne({ where: { username: trimmed } });
+  if (conflict && conflict.id !== req.user.id) {
+    return res.status(409).json({
+      error: "该昵称已被占用",
+      code: "CONFLICT",
+    });
+  }
+
+  const user = await User.findByPk(req.user.id);
+  if (!user) {
+    return res.status(404).json({ error: "用户不存在" });
+  }
+
+  await user.update({ username: trimmed });
+
+  res.json({
+    success: true,
+    data: user.toJSON(),
+  });
+});
+
 // 登出
 router.post("/logout", authMiddleware, async (req, res) => {
   res.json({
