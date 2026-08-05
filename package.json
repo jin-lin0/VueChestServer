@@ -9,7 +9,6 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "migrate:r2": "node scripts/migrate-r2.js",
     "reset:market": "node scripts/reset-market-apps.js"
   },
   "dependencies": {
