@@ -3,10 +3,12 @@ const { Op } = require("sequelize");
 const router = express.Router();
 const AIChatConversation = require("../models/aiChatConversation");
 const AIChatMessage = require("../models/aiChatMessage");
+const { authMiddleware } = require("../middleware/auth");
 const {
   getConfiguredProviders,
   getProviderMeta,
   getApiKey,
+  isModelAllowed,
   buildUpstreamRequest,
   parseUpstreamDelta,
 } = require("../config/aiProviders");
@@ -23,6 +25,7 @@ router.get("/providers", (req, res) => {
  * 仅持久化「最新一条用户消息 + 助手回复」，避免与已存历史重复。
  */
 async function persistTurn(
+  userId,
   conversationId,
   provider,
   model,
@@ -35,7 +38,7 @@ async function persistTurn(
 
   const [conv] = await AIChatConversation.findOrCreate({
     where: { id: conversationId },
-    defaults: { title: "新对话", provider, model },
+    defaults: { title: "新对话", provider, model, userId },
   });
 
   if (conv.title === "新对话") {
@@ -62,7 +65,8 @@ async function persistTurn(
   }
 }
 
-router.post("/chat", async (req, res) => {
+router.post("/chat", authMiddleware, async (req, res) => {
+  const userId = req.user.id;
   const rawId = req.body?.conversationId;
   const conversationId = rawId != null ? String(rawId) : "";
   const { provider, model, messages } = req.body || {};
@@ -94,6 +98,27 @@ router.post("/chat", async (req, res) => {
       error: `未知平台: ${provider}`,
       code: "VALIDATION",
     });
+  }
+
+  // model 白名单校验：只允许使用平台声明的模型，防止指定任意/高价模型
+  if (!isModelAllowed(provider, model)) {
+    return res.status(400).json({
+      success: false,
+      error: `模型 ${model} 不属于平台 ${meta.name} 支持列表`,
+      code: "MODEL_NOT_ALLOWED",
+    });
+  }
+
+  // 会话归属校验：若会话已存在，必须是当前用户自己的
+  if (conversationId) {
+    const existing = await AIChatConversation.findByPk(conversationId);
+    if (existing && existing.userId != null && existing.userId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: "无权访问该会话",
+        code: "FORBIDDEN",
+      });
+    }
   }
 
   const apiKey = getApiKey(provider);
@@ -195,14 +220,22 @@ router.post("/chat", async (req, res) => {
 
   // 落库（无论客户端是否中途断开，都尽量保存这一轮）
   try {
-    await persistTurn(conversationId, provider, model, messages, fullAssistant);
+    await persistTurn(userId, conversationId, provider, model, messages, fullAssistant);
   } catch (e) {
     console.error("AI 对话落库失败:", e.message);
   }
 });
 
-router.get("/conversations/:id/messages", async (req, res) => {
+router.get("/conversations/:id/messages", authMiddleware, async (req, res) => {
   const conv = await AIChatConversation.findByPk(req.params.id);
+  if (!conv || conv.userId !== req.user.id) {
+    return res.status(404).json({
+      success: false,
+      error: "会话不存在",
+      code: "NOT_FOUND",
+    });
+  }
+
   const rows = await AIChatMessage.findAll({
     where: { conversationId: req.params.id, role: { [Op.ne]: "system" } },
     order: [["id", "ASC"]],

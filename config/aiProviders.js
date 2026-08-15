@@ -34,6 +34,13 @@ function getProviderMeta(providerId) {
   return PROVIDER_META.find((p) => p.id === providerId);
 }
 
+// 校验 model 是否属于该平台声明的白名单，防止被指定任意/高价模型耗尽额度
+function isModelAllowed(providerId, model) {
+  const meta = getProviderMeta(providerId);
+  if (!meta) return false;
+  return meta.models.some((m) => m.id === model);
+}
+
 function getConfiguredProviders() {
   return PROVIDER_META.filter((p) => !!getApiKey(p.id)).map((p) => ({
     id: p.id,
@@ -53,6 +60,9 @@ function buildUpstreamRequest({
 }) {
   const meta = getProviderMeta(providerId);
   if (!meta) throw new Error(`未知平台: ${providerId}`);
+  if (!isModelAllowed(providerId, model)) {
+    throw new Error(`模型 ${model} 不属于平台 ${meta.name} 白名单`);
+  }
 
   return {
     url: meta.baseUrl,
@@ -79,6 +89,7 @@ module.exports = {
   getApiKey,
   getProviderMeta,
   getConfiguredProviders,
+  isModelAllowed,
   buildUpstreamRequest,
   parseUpstreamDelta,
 };
