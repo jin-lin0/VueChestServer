@@ -42,10 +42,6 @@ const MarketApp = sequelize.define(
       type: DataTypes.STRING(500),
       allowNull: true,
     },
-    contentType: {
-      type: DataTypes.STRING(100),
-      allowNull: true,
-    },
     size: {
       type: DataTypes.INTEGER,
       allowNull: true,

@@ -1,5 +1,5 @@
 const express = require("express");
-const { Op } = require("sequelize");
+const { Op, fn, col } = require("sequelize");
 const VisitLog = require("../models/visitLog");
 const MarketApp = require("../models/marketApp");
 const Question = require("../models/question");
@@ -31,6 +31,27 @@ router.get("/dashboard", authMiddleware, adminOnly, async (req, res) => {
   });
   const totalVisits = await VisitLog.sum("count");
 
+  // 访问地域分布：按国家/城市聚合访问次数（visitLogger 已写入 country/city）
+  const topCountries = await VisitLog.findAll({
+    attributes: ["country", [fn("SUM", col("count")), "total"]],
+    where: { country: { [Op.ne]: "" } },
+    group: ["country"],
+    order: [[fn("SUM", col("count")), "DESC"]],
+    limit: 10,
+  }).then((rows) =>
+    rows.map((r) => ({ country: r.country, total: Number(r.get("total")) })),
+  );
+
+  const topCities = await VisitLog.findAll({
+    attributes: ["city", [fn("SUM", col("count")), "total"]],
+    where: { city: { [Op.ne]: "" } },
+    group: ["city"],
+    order: [[fn("SUM", col("count")), "DESC"]],
+    limit: 10,
+  }).then((rows) =>
+    rows.map((r) => ({ city: r.city, total: Number(r.get("total")) })),
+  );
+
   res.json({
     success: true,
     data: {
@@ -39,26 +60,10 @@ router.get("/dashboard", authMiddleware, adminOnly, async (req, res) => {
       todayVisits: todayVisits || 0,
       totalVisits: totalVisits || 0,
       totalApps: await totalCreatedCount(MarketApp),
-    },
-  });
-});
-
-// 调试：查看请求来源信息
-router.get("/whoami", authMiddleware, adminOnly, (req, res) => {
-  const ip =
-    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
-    req.ip ||
-    req.socket?.remoteAddress;
-  res.json({
-    ip,
-    vercel: {
-      country: req.headers["x-vercel-ip-country"] || null,
-      city: req.headers["x-vercel-ip-city"] || null,
-      latitude: req.headers["x-vercel-ip-latitude"] || null,
-      longitude: req.headers["x-vercel-ip-longitude"] || null,
-    },
-    headers: {
-      "x-forwarded-for": req.headers["x-forwarded-for"] || null,
+      geo: {
+        countries: topCountries,
+        cities: topCities,
+      },
     },
   });
 });

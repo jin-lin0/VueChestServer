@@ -389,23 +389,6 @@ router.put("/me", authMiddleware, async (req, res) => {
   });
 });
 
-// 登出
-router.post("/logout", authMiddleware, async (req, res) => {
-  res.json({
-    success: true,
-    message: "登出成功",
-  });
-});
-
-// 检查是否有用户存在（用于初始化）
-router.get("/check-init", async (req, res) => {
-  const count = await User.count();
-  res.json({
-    success: true,
-    hasUser: count > 0,
-  });
-});
-
 // ─── 应用安装同步 ─────────────────────────────
 
 // 获取已安装应用列表

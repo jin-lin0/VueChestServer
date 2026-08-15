@@ -214,6 +214,10 @@ router.post("/apps", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "应用文件不存在或大小不符合要求" });
   }
 
+  if (Array.isArray(screenshots) && screenshots.length > 3) {
+    return res.status(400).json({ error: "最多上传 3 张截图" });
+  }
+
   const app = await MarketApp.create({
     name,
     icon,
@@ -304,20 +308,25 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     readme,
     status,
     allowNetwork,
+    isOfficial,
   } = req.body;
 
   const updateData = {};
+  if (Array.isArray(screenshots) && screenshots.length > 3) {
+    return res.status(400).json({ error: "最多上传 3 张截图" });
+  }
   if (name !== undefined) updateData.name = name;
   if (icon !== undefined) updateData.icon = icon;
   if (description !== undefined) updateData.description = description;
   if (version !== undefined) updateData.version = version;
   if (category !== undefined) updateData.category = category;
-  if (screenshots !== undefined)
+  if (Array.isArray(screenshots))
     updateData.screenshots = JSON.stringify(screenshots);
   if (readme !== undefined) updateData.readme = readme;
   if (status !== undefined) updateData.status = status;
   if (allowNetwork !== undefined)
     updateData.allowNetwork = JSON.stringify(parseAllowNetwork(allowNetwork));
+  if (isOfficial !== undefined) updateData.isOfficial = !!isOfficial;
 
   if (fileKey !== undefined) {
     if (typeof fileKey !== "string" || !fileKey.startsWith("apps/")) {

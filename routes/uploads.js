@@ -11,13 +11,23 @@ const {
 const slugify = require("../utils/slugify");
 
 const router = express.Router();
-const limits = { avatar: 2 * 1024 * 1024, app: 10 * 1024 * 1024 };
+const limits = {
+  avatar: 2 * 1024 * 1024,
+  app: 10 * 1024 * 1024,
+  screenshot: 5 * 1024 * 1024,
+};
 const types = {
   avatar: new Set(["image/jpeg", "image/png", "image/webp"]),
   app: new Set([
     "application/javascript",
     "text/javascript",
     "application/x-javascript",
+  ]),
+  screenshot: new Set([
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
   ]),
 };
 
@@ -37,7 +47,10 @@ router.post("/presign", authMiddleware, async (req, res) => {
 
   const extension =
     kind === "app" ? "js" : contentType.split("/")[1].replace("jpeg", "jpg");
-  const readableName = slugify(name, kind === "avatar" ? "avatar" : "app");
+  const readableName = slugify(
+    name,
+    kind === "avatar" ? "avatar" : kind === "screenshot" ? "screenshot" : "app",
+  );
   const suffix = crypto.randomUUID().slice(0, 8); // 短随机后缀，防止同名覆盖
   const key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${readableName}-${suffix}.${extension}`;
   const uploadUrl = await createUploadUrl(key, contentType);
