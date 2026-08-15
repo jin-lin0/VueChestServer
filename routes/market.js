@@ -7,6 +7,24 @@ const { publicUrl, headObject, deleteObject } = require("../utils/r2");
 
 const router = express.Router();
 
+// 把（DB 存入的 JSON 串或前端传入的数组）统一规整为字符串域名数组；
+// 仅保留字符串元素，过滤空值，避免注入非字符串内容。
+function parseAllowNetwork(raw) {
+  const arr = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string" && raw.trim()
+      ? (() => {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return raw.split(/[,\s]+/).filter(Boolean);
+          }
+        })()
+      : [];
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim());
+}
+
 // 获取分类列表（只统计已通过的应用，单次 GROUP BY 查询，避免 N+1）
 router.get("/categories", async (req, res) => {
   const rows = await MarketApp.findAll({
@@ -55,6 +73,7 @@ router.get("/apps", optionalAuth, async (req, res) => {
     "isOfficial",
     "downloads",
     "status",
+    "allowNetwork",
     "createdAt",
     "updatedAt",
   ];
@@ -70,7 +89,11 @@ router.get("/apps", optionalAuth, async (req, res) => {
   res.json({
     success: true,
     data: {
-      items: rows,
+      items: rows.map((r) => {
+        const d = r.toJSON();
+        d.allowNetwork = parseAllowNetwork(d.allowNetwork);
+        return d;
+      }),
       total: count,
       page: pageNum,
       limit: limitNum,
@@ -99,6 +122,7 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
       "fileKey",
       "fileUrl",
       "uploadedBy",
+      "allowNetwork",
       "createdAt",
       "updatedAt",
     ],
@@ -115,6 +139,7 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
   }
 
   const data = app.toJSON();
+  data.allowNetwork = parseAllowNetwork(data.allowNetwork);
   if (data.screenshots) {
     try {
       data.screenshots = JSON.parse(data.screenshots);
@@ -169,6 +194,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
     fileSize,
     screenshots,
     readme,
+    allowNetwork,
   } = req.body;
 
   if (
@@ -201,6 +227,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
     size: fileObject.ContentLength || Number(fileSize) || null,
     screenshots: screenshots ? JSON.stringify(screenshots) : null,
     readme: readme || "",
+    allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
     uploadedBy: req.user.id,
     status: "pending",
   });
@@ -276,6 +303,7 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     screenshots,
     readme,
     status,
+    allowNetwork,
   } = req.body;
 
   const updateData = {};
@@ -288,6 +316,8 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     updateData.screenshots = JSON.stringify(screenshots);
   if (readme !== undefined) updateData.readme = readme;
   if (status !== undefined) updateData.status = status;
+  if (allowNetwork !== undefined)
+    updateData.allowNetwork = JSON.stringify(parseAllowNetwork(allowNetwork));
 
   if (fileKey !== undefined) {
     if (typeof fileKey !== "string" || !fileKey.startsWith("apps/")) {

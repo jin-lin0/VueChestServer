@@ -74,6 +74,12 @@ const MarketApp = sequelize.define(
       type: DataTypes.ENUM("pending", "approved", "rejected"),
       defaultValue: "pending",
     },
+    // 允许访问的网络域名白名单（JSON 数组，如 ["api.example.com","*.example.com"]）。
+    // 沙箱应用默认无法联网，仅在 allowNetwork 显式声明且经审核后，对应域名才会被放行。
+    allowNetwork: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   },
   {
     tableName: "market_apps",

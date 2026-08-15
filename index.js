@@ -3,6 +3,7 @@ const cors = require("cors");
 const compression = require("compression");
 require("dotenv").config();
 const sequelize = require("./config/database");
+const MarketApp = require("./models/marketApp");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -88,6 +89,12 @@ app.use("/api/music-favorites", musicFavoritesRouter);
 if (!process.env.VERCEL) {
   sequelize
     .sync()
+    // 单独为 market_apps 补 allowNetwork 列（alter 仅加列，不影响其它表/数据）
+    .then(() =>
+      MarketApp.sync({ alter: true }).catch((err) =>
+        console.warn("MarketApp allowNetwork 列同步跳过:", err.message),
+      ),
+    )
     .then(() => {
       app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
