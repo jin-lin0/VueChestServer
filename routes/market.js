@@ -218,6 +218,32 @@ router.post("/apps", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "最多上传 3 张截图" });
   }
 
+  // 幂等发布：同名 + 同作者已存在则更新（官方重发直接通过审核），否则新建
+  const existing = await MarketApp.findOne({ where: { name, uploadedBy: req.user.id } });
+  if (existing) {
+    const oldKey = existing.fileKey;
+    await existing.update({
+      icon,
+      description: description || existing.description || "",
+      version: version || existing.version,
+      category: category || existing.category,
+      fileKey,
+      fileUrl: publicUrl(fileKey),
+      size: fileObject.ContentLength || Number(fileSize) || existing.size,
+      readme: readme || existing.readme || "",
+      allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
+      status: isAdmin(req.user) ? "approved" : existing.status,
+    });
+    if (oldKey && oldKey !== fileKey) {
+      await deleteObject(oldKey).catch(() => {});
+    }
+    return res.status(200).json({
+      success: true,
+      message: "更新成功",
+      data: { id: existing.id, name: existing.name, version: existing.version, status: existing.status },
+    });
+  }
+
   const app = await MarketApp.create({
     name,
     icon,

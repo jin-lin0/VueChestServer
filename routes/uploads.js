@@ -51,8 +51,10 @@ router.post("/presign", authMiddleware, async (req, res) => {
     name,
     kind === "avatar" ? "avatar" : kind === "screenshot" ? "screenshot" : "app",
   );
-  const suffix = crypto.randomUUID().slice(0, 8); // 短随机后缀，防止同名覆盖
-  const key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${readableName}-${suffix}.${extension}`;
+  // app 用稳定 key（apps/<userId>/<slug>.js）覆盖式更新，避免每次随机后缀在 R2 堆积；
+  // 头像/截图仍加随机后缀，防止不同文件互相覆盖。
+  const suffix = kind === "app" && name ? "" : `-${crypto.randomUUID().slice(0, 8)}`;
+  const key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${readableName}${suffix}.${extension}`;
   const uploadUrl = await createUploadUrl(key, contentType);
   res.json({
     success: true,
