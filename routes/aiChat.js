@@ -110,15 +110,13 @@ router.post("/chat", authMiddleware, async (req, res) => {
   }
 
   // 会话归属校验：若会话已存在，必须是当前用户自己的
-  if (conversationId) {
-    const existing = await AIChatConversation.findByPk(conversationId);
-    if (existing && existing.userId != null && existing.userId !== userId) {
-      return res.status(403).json({
-        success: false,
-        error: "无权访问该会话",
-        code: "FORBIDDEN",
-      });
-    }
+  const existing = await AIChatConversation.findByPk(conversationId);
+  if (existing && existing.userId != null && existing.userId !== userId) {
+    return res.status(403).json({
+      success: false,
+      error: "无权访问该会话",
+      code: "FORBIDDEN",
+    });
   }
 
   const apiKey = getApiKey(provider);

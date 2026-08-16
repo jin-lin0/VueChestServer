@@ -88,13 +88,6 @@ User.prototype.validatePassword = async function (password) {
 User.prototype.toJSON = function () {
   const values = { ...this.get() };
   delete values.password;
-  if (values.installedApps && typeof values.installedApps === "string") {
-    try {
-      values.installedApps = JSON.parse(values.installedApps);
-    } catch {
-      values.installedApps = [];
-    }
-  }
   return values;
 };
 

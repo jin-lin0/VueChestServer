@@ -376,7 +376,8 @@ router.put("/me", authMiddleware, async (req, res) => {
     });
   }
 
-  const user = await User.findByPk(req.user.id);
+  // 昵称未变化时 conflict 即当前用户本人，直接复用，避免重复查库
+  const user = conflict || (await User.findByPk(req.user.id));
   if (!user) {
     return res.status(404).json({ error: "用户不存在" });
   }

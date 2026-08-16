@@ -105,4 +105,4 @@ async function sendResetCodeEmail(to, code) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendResetCodeEmail, getFromAddress };
+module.exports = { sendVerificationEmail, sendResetCodeEmail };

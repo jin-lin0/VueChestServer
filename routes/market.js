@@ -253,7 +253,6 @@ router.post("/apps", authMiddleware, async (req, res) => {
     category: category || "",
     fileKey,
     fileUrl: publicUrl(fileKey),
-    contentType: "application/javascript",
     size: fileObject.ContentLength || Number(fileSize) || null,
     screenshots: screenshots ? JSON.stringify(screenshots) : null,
     readme: readme || "",
