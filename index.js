@@ -4,6 +4,7 @@ const compression = require("compression");
 require("dotenv").config();
 const sequelize = require("./config/database");
 const MarketApp = require("./models/marketApp");
+const AppComment = require("./models/appComment");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -66,6 +67,10 @@ app.use("/api/questions", questionsRouter);
 const marketRouter = require("./routes/market");
 app.use("/api/market", marketRouter);
 
+// 应用评论路由（挂在 /api/market 下，强绑定 app）
+const commentsRouter = require("./routes/comments");
+app.use("/api/market", commentsRouter);
+
 // 用户管理路由
 const usersRouter = require("./routes/users");
 app.use("/api/users", usersRouter);
@@ -104,6 +109,12 @@ if (!process.env.VERCEL) {
     .catch((err) => {
       console.error("Unable to sync database:", err);
     });
+} else {
+  // Vercel：跳过整体 sync 以加速冷启动，但显式确保新增的 app_comments 表存在
+  // （向前兼容，非迁移脚本；本地非 VERCEL 环境由上面的 sequelize.sync() 统一建表）
+  AppComment.sync({ alter: true })
+    .then(() => console.log("app_comments 表已就绪"))
+    .catch((err) => console.warn("app_comments 同步跳过:", err.message));
 }
 
 // 全局错误处理中间件（兜底所有未捕获的异常，统一错误响应格式）
