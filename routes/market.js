@@ -6,6 +6,7 @@ const { adminOnly, isAdmin } = require("../middleware/superAdmin");
 const { publicUrl, headObject, deleteObject } = require("../utils/r2");
 
 const router = express.Router();
+const VERSION_RE = /^v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 // 把（DB 存入的 JSON 串或前端传入的数组）统一规整为字符串域名数组；
 // 仅保留字符串元素，过滤空值，避免注入非字符串内容。
@@ -116,6 +117,7 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
       "size",
       "screenshots",
       "readme",
+      "releaseNotes",
       "isOfficial",
       "downloads",
       "status",
@@ -194,6 +196,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
     fileSize,
     screenshots,
     readme,
+    releaseNotes,
     allowNetwork,
   } = req.body;
 
@@ -204,6 +207,9 @@ router.post("/apps", authMiddleware, async (req, res) => {
     !fileKey.startsWith(`apps/${req.user.id}/`)
   ) {
     return res.status(400).json({ error: "名称、图标和应用文件不能为空" });
+  }
+  if (version && !VERSION_RE.test(String(version).trim())) {
+    return res.status(400).json({ error: "版本号格式无效，请使用如 1.2.0 或 1.2.0-beta.1" });
   }
   const fileObject = await headObject(fileKey).catch(() => null);
   if (
@@ -231,6 +237,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
       fileUrl: publicUrl(fileKey),
       size: fileObject.ContentLength || Number(fileSize) || existing.size,
       readme: readme || existing.readme || "",
+      releaseNotes: releaseNotes || "",
       allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
       status: isAdmin(req.user) ? "approved" : existing.status,
     });
@@ -256,6 +263,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
     size: fileObject.ContentLength || Number(fileSize) || null,
     screenshots: screenshots ? JSON.stringify(screenshots) : null,
     readme: readme || "",
+    releaseNotes: releaseNotes || "",
     allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
     uploadedBy: req.user.id,
     status: "pending",
@@ -331,6 +339,7 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     fileKey,
     screenshots,
     readme,
+    releaseNotes,
     status,
     allowNetwork,
     isOfficial,
@@ -340,6 +349,9 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
   if (Array.isArray(screenshots) && screenshots.length > 3) {
     return res.status(400).json({ error: "最多上传 3 张截图" });
   }
+  if (version !== undefined && !VERSION_RE.test(String(version).trim())) {
+    return res.status(400).json({ error: "版本号格式无效，请使用如 1.2.0 或 1.2.0-beta.1" });
+  }
   if (name !== undefined) updateData.name = name;
   if (icon !== undefined) updateData.icon = icon;
   if (description !== undefined) updateData.description = description;
@@ -348,6 +360,7 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
   if (Array.isArray(screenshots))
     updateData.screenshots = JSON.stringify(screenshots);
   if (readme !== undefined) updateData.readme = readme;
+  if (releaseNotes !== undefined) updateData.releaseNotes = releaseNotes;
   if (status !== undefined) updateData.status = status;
   if (allowNetwork !== undefined)
     updateData.allowNetwork = JSON.stringify(parseAllowNetwork(allowNetwork));

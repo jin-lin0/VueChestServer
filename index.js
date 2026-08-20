@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const compression = require("compression");
+const { DataTypes } = require("sequelize");
 require("dotenv").config();
 const sequelize = require("./config/database");
 const MarketApp = require("./models/marketApp");
@@ -9,6 +10,17 @@ const UserWorkspace = require("./models/userWorkspace");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+async function ensureMarketReleaseNotesColumn() {
+  const queryInterface = sequelize.getQueryInterface();
+  const columns = await queryInterface.describeTable("market_apps");
+  if (!columns.releaseNotes) {
+    await queryInterface.addColumn("market_apps", "releaseNotes", {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    });
+  }
+}
 
 app.use(cors());
 app.use((req, res, next) => {
@@ -95,10 +107,9 @@ app.use("/api/music-favorites", musicFavoritesRouter);
 if (!process.env.VERCEL) {
   sequelize
     .sync()
-    // 单独为 market_apps 补 allowNetwork 列（alter 仅加列，不影响其它表/数据）
     .then(() =>
-      MarketApp.sync({ alter: true }).catch((err) =>
-        console.warn("MarketApp allowNetwork 列同步跳过:", err.message),
+      ensureMarketReleaseNotesColumn().catch((err) =>
+        console.warn("MarketApp releaseNotes 列同步跳过:", err.message),
       ),
     )
     .then(() => {
@@ -116,6 +127,7 @@ if (!process.env.VERCEL) {
   Promise.all([
     AppComment.sync({ alter: true }),
     UserWorkspace.sync(),
+    ensureMarketReleaseNotesColumn(),
   ])
     .then(() => console.log("增量数据表已就绪"))
     .catch((err) => console.warn("增量数据表同步跳过:", err.message));

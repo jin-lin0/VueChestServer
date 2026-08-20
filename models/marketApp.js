@@ -54,6 +54,10 @@ const MarketApp = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    releaseNotes: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
     isOfficial: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,
