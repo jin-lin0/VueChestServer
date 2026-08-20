@@ -5,6 +5,7 @@ require("dotenv").config();
 const sequelize = require("./config/database");
 const MarketApp = require("./models/marketApp");
 const AppComment = require("./models/appComment");
+const UserWorkspace = require("./models/userWorkspace");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -112,9 +113,12 @@ if (!process.env.VERCEL) {
 } else {
   // Vercel：跳过整体 sync 以加速冷启动，但显式确保新增的 app_comments 表存在
   // （向前兼容，非迁移脚本；本地非 VERCEL 环境由上面的 sequelize.sync() 统一建表）
-  AppComment.sync({ alter: true })
-    .then(() => console.log("app_comments 表已就绪"))
-    .catch((err) => console.warn("app_comments 同步跳过:", err.message));
+  Promise.all([
+    AppComment.sync({ alter: true }),
+    UserWorkspace.sync(),
+  ])
+    .then(() => console.log("增量数据表已就绪"))
+    .catch((err) => console.warn("增量数据表同步跳过:", err.message));
 }
 
 // 全局错误处理中间件（兜底所有未捕获的异常，统一错误响应格式）

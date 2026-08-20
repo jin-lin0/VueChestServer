@@ -1,6 +1,7 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const User = require("../models/user");
+const UserWorkspace = require("../models/userWorkspace");
 const { authMiddleware } = require("../middleware/auth");
 const { sendVerificationEmail, sendResetCodeEmail } = require("../utils/mail");
 const {
@@ -14,6 +15,69 @@ const router = express.Router();
 
 // 简单邮箱格式校验
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const APP_KEY_RE = /^(builtin|market):\d+$/;
+
+function sanitizeWorkspaceConfig(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    const error = new Error("工作台配置格式错误");
+    error.status = 400;
+    error.code = "VALIDATION_ERROR";
+    throw error;
+  }
+
+  const payloadSize = Buffer.byteLength(JSON.stringify(raw), "utf8");
+  if (payloadSize > 100 * 1024) {
+    const error = new Error("工作台配置不能超过 100KB");
+    error.status = 413;
+    error.code = "PAYLOAD_TOO_LARGE";
+    throw error;
+  }
+
+  if (!Array.isArray(raw.workspaces) || raw.workspaces.length < 1 || raw.workspaces.length > 8) {
+    const error = new Error("工作区数量必须在 1 到 8 个之间");
+    error.status = 400;
+    error.code = "VALIDATION_ERROR";
+    throw error;
+  }
+
+  const workspaces = raw.workspaces.map((workspace, index) => {
+    if (!workspace || typeof workspace !== "object") {
+      const error = new Error(`第 ${index + 1} 个工作区格式错误`);
+      error.status = 400;
+      error.code = "VALIDATION_ERROR";
+      throw error;
+    }
+
+    const id = String(workspace.id || "").slice(0, 64);
+    const name = String(workspace.name || "").trim().slice(0, 20);
+    if (!id || !name) {
+      const error = new Error("工作区 ID 和名称不能为空");
+      error.status = 400;
+      error.code = "VALIDATION_ERROR";
+      throw error;
+    }
+
+    const items = Array.isArray(workspace.items)
+      ? workspace.items
+          .filter((item) => item && APP_KEY_RE.test(String(item.appKey || "")))
+          .slice(0, 100)
+          .map((item) => ({ appKey: String(item.appKey) }))
+      : [];
+
+    return {
+      id,
+      name,
+      icon: String(workspace.icon || "◫").slice(0, 8),
+      items,
+    };
+  });
+
+  return {
+    version: 1,
+    workspaces,
+    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : Date.now(),
+  };
+}
 
 // 发送注册验证码
 router.post("/send-code", async (req, res) => {
@@ -426,6 +490,34 @@ router.put("/installed-apps", authMiddleware, async (req, res) => {
   res.json({
     success: true,
     data: installedApps,
+  });
+});
+
+// ─── 个人工作台云同步 ─────────────────────────
+
+router.get("/workspace", authMiddleware, async (req, res) => {
+  const workspace = await UserWorkspace.findOne({ where: { userId: req.user.id } });
+  res.json({
+    success: true,
+    data: workspace
+      ? { config: workspace.config, updatedAt: workspace.updatedAt.toISOString() }
+      : null,
+  });
+});
+
+router.put("/workspace", authMiddleware, async (req, res) => {
+  const config = sanitizeWorkspaceConfig(req.body?.config);
+  let workspace = await UserWorkspace.findOne({ where: { userId: req.user.id } });
+
+  if (workspace) {
+    await workspace.update({ config });
+  } else {
+    workspace = await UserWorkspace.create({ userId: req.user.id, config });
+  }
+
+  res.json({
+    success: true,
+    data: { config: workspace.config, updatedAt: workspace.updatedAt.toISOString() },
   });
 });
 
