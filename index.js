@@ -132,7 +132,9 @@ async function ensureMarketVersions() {
 async function ensureIncrementalSchema() {
   await ensureMarketColumns();
   await Promise.all([
-    AppComment.sync({ alter: true }),
+    // 冷启动禁止 alter：旧库外键命名可能与 Sequelize 推导不一致，
+    // alter 会尝试删除不存在的约束并让所有 API 初始化失败。
+    AppComment.sync(),
     UserWorkspace.sync(),
     WorkspaceTemplate.sync(),
     UserSession.sync(),
