@@ -1,7 +1,9 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
+const { Op } = require("sequelize");
 const User = require("../models/user");
 const UserWorkspace = require("../models/userWorkspace");
+const UserSession = require("../models/userSession");
 const { authMiddleware } = require("../middleware/auth");
 const { sendVerificationEmail, sendResetCodeEmail } = require("../utils/mail");
 const {
@@ -16,6 +18,48 @@ const router = express.Router();
 // 简单邮箱格式校验
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const APP_KEY_RE = /^(builtin|market):\d+$/;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function detectDevice(req) {
+  const ua = String(req.headers["user-agent"] || "未知设备").slice(0, 500);
+  let name = "浏览器设备";
+  if (/iPhone/i.test(ua)) name = "iPhone";
+  else if (/iPad/i.test(ua)) name = "iPad";
+  else if (/Android/i.test(ua)) name = "Android 设备";
+  else if (/Macintosh|Mac OS/i.test(ua)) name = "Mac";
+  else if (/Windows/i.test(ua)) name = "Windows 设备";
+  else if (/Linux/i.test(ua)) name = "Linux 设备";
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /Chrome\//.test(ua)
+      ? "Chrome"
+      : /Firefox\//.test(ua)
+        ? "Firefox"
+        : /Safari\//.test(ua)
+          ? "Safari"
+          : "浏览器";
+  return {
+    deviceName: `${name} · ${browser}`,
+    userAgent: ua,
+    ip: String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim().slice(0, 64),
+  };
+}
+
+async function createLoginSession(user, req) {
+  const now = new Date();
+  const session = await UserSession.create({
+    userId: user.id,
+    ...detectDevice(req),
+    lastActiveAt: now,
+    expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
+  });
+  const token = jwt.sign(
+    { id: user.id, username: user.username, role: user.role, sessionId: session.id },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" },
+  );
+  return { token, session };
+}
 
 function sanitizeWorkspaceConfig(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -210,11 +254,7 @@ router.post("/register", async (req, res) => {
     installedApps: [],
   });
 
-  const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
+  const { token } = await createLoginSession(user, req);
 
   await user.update({ lastLoginAt: new Date() });
 
@@ -319,6 +359,10 @@ router.post("/reset-password", async (req, res) => {
   // beforeUpdate 钩子会自动对明文密码做 bcrypt 哈希
   user.password = newPassword;
   await user.save();
+  await UserSession.update(
+    { revokedAt: new Date() },
+    { where: { userId: user.id, revokedAt: null } },
+  );
 
   res.json({
     success: true,
@@ -367,11 +411,7 @@ router.post("/login", async (req, res) => {
     });
   }
 
-  const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
+  const { token } = await createLoginSession(user, req);
 
   await user.update({ lastLoginAt: new Date() });
 
@@ -401,6 +441,52 @@ router.get("/me", authMiddleware, async (req, res) => {
     success: true,
     data: user.toJSON(),
   });
+});
+
+router.post("/logout", authMiddleware, async (req, res) => {
+  await UserSession.update(
+    { revokedAt: new Date() },
+    { where: { id: req.user.sessionId, userId: req.user.id } },
+  );
+  res.json({ success: true });
+});
+
+router.get("/sessions", authMiddleware, async (req, res) => {
+  const sessions = await UserSession.findAll({
+    where: { userId: req.user.id, revokedAt: null, expiresAt: { [Op.gt]: new Date() } },
+    attributes: ["id", "deviceName", "ip", "lastActiveAt", "expiresAt", "createdAt"],
+    order: [["lastActiveAt", "DESC"]],
+  });
+  res.json({
+    success: true,
+    data: sessions.map((session) => ({
+      ...session.toJSON(),
+      isCurrent: session.id === req.user.sessionId,
+    })),
+  });
+});
+
+router.delete("/sessions/others", authMiddleware, async (req, res) => {
+  await UserSession.update(
+    { revokedAt: new Date() },
+    {
+      where: {
+        userId: req.user.id,
+        id: { [Op.ne]: req.user.sessionId },
+        revokedAt: null,
+      },
+    },
+  );
+  res.json({ success: true });
+});
+
+router.delete("/sessions/:id", authMiddleware, async (req, res) => {
+  const session = await UserSession.findOne({
+    where: { id: req.params.id, userId: req.user.id, revokedAt: null },
+  });
+  if (!session) return res.status(404).json({ error: "设备会话不存在" });
+  await session.update({ revokedAt: new Date() });
+  res.json({ success: true, data: { revokedCurrent: session.id === req.user.sessionId } });
 });
 
 // 修改个人资料（当前支持修改登录用户名/昵称）
@@ -519,6 +605,11 @@ router.put("/workspace", authMiddleware, async (req, res) => {
     success: true,
     data: { config: workspace.config, updatedAt: workspace.updatedAt.toISOString() },
   });
+});
+
+router.delete("/workspace", authMiddleware, async (req, res) => {
+  await UserWorkspace.destroy({ where: { userId: req.user.id } });
+  res.json({ success: true });
 });
 
 module.exports = router;

@@ -1,12 +1,15 @@
 const express = require("express");
 const cors = require("cors");
 const compression = require("compression");
-const { DataTypes } = require("sequelize");
+const { DataTypes, Op } = require("sequelize");
 require("dotenv").config();
 const sequelize = require("./config/database");
 const MarketApp = require("./models/marketApp");
+const MarketAppVersion = require("./models/marketAppVersion");
 const AppComment = require("./models/appComment");
 const UserWorkspace = require("./models/userWorkspace");
+const WorkspaceTemplate = require("./models/workspaceTemplate");
+const UserSession = require("./models/userSession");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,6 +24,59 @@ async function ensureMarketReleaseNotesColumn() {
     });
   }
 }
+
+async function ensureMarketVersions() {
+  await MarketAppVersion.sync();
+  const queryInterface = sequelize.getQueryInterface();
+  const versionColumns = await queryInterface.describeTable("market_app_versions");
+  if (!versionColumns.allowNetwork) {
+    await queryInterface.addColumn("market_app_versions", "allowNetwork", {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    });
+  }
+  const apps = await MarketApp.findAll({ where: { fileKey: { [Op.ne]: null } } });
+  for (const app of apps) {
+    await MarketAppVersion.findOrCreate({
+      where: { appId: app.id, version: app.version },
+      defaults: {
+        appId: app.id,
+        version: app.version,
+        fileKey: app.fileKey,
+        fileUrl: app.fileUrl || `${process.env.R2_PUBLIC_URL || "https://files.020201.xyz"}/${app.fileKey}`,
+        size: app.size,
+        releaseNotes: app.releaseNotes || "",
+        allowNetwork: app.allowNetwork || "[]",
+        publishedBy: app.uploadedBy,
+        status: "active",
+      },
+    });
+  }
+}
+
+async function ensureIncrementalSchema() {
+  await ensureMarketReleaseNotesColumn();
+  await Promise.all([
+    AppComment.sync({ alter: true }),
+    UserWorkspace.sync(),
+    WorkspaceTemplate.sync(),
+    UserSession.sync(),
+    MarketAppVersion.sync(),
+  ]);
+  await ensureMarketVersions();
+}
+
+let schemaReady = Promise.resolve();
+if (process.env.VERCEL) schemaReady = ensureIncrementalSchema();
+
+app.use(async (req, res, next) => {
+  try {
+    await schemaReady;
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.use(cors());
 app.use((req, res, next) => {
@@ -103,6 +159,9 @@ app.use("/api/ai-chat", aiChatRouter);
 const musicFavoritesRouter = require("./routes/musicFavorites");
 app.use("/api/music-favorites", musicFavoritesRouter);
 
+const workspaceTemplatesRouter = require("./routes/workspaceTemplates");
+app.use("/api/workspace-templates", workspaceTemplatesRouter);
+
 // 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
 if (!process.env.VERCEL) {
   sequelize
@@ -112,6 +171,9 @@ if (!process.env.VERCEL) {
         console.warn("MarketApp releaseNotes 列同步跳过:", err.message),
       ),
     )
+    .then(() => ensureMarketVersions())
+    .then(() => WorkspaceTemplate.sync())
+    .then(() => UserSession.sync())
     .then(() => {
       app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
@@ -124,11 +186,7 @@ if (!process.env.VERCEL) {
 } else {
   // Vercel：跳过整体 sync 以加速冷启动，但显式确保新增的 app_comments 表存在
   // （向前兼容，非迁移脚本；本地非 VERCEL 环境由上面的 sequelize.sync() 统一建表）
-  Promise.all([
-    AppComment.sync({ alter: true }),
-    UserWorkspace.sync(),
-    ensureMarketReleaseNotesColumn(),
-  ])
+  schemaReady
     .then(() => console.log("增量数据表已就绪"))
     .catch((err) => console.warn("增量数据表同步跳过:", err.message));
 }

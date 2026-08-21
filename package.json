@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "test:platform": "node scripts/integration-platform.js",
     "reset:market": "node scripts/reset-market-apps.js"
   },
   "dependencies": {

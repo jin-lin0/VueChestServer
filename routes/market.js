@@ -1,12 +1,37 @@
 const express = require("express");
 const { Op, fn, col } = require("sequelize");
 const MarketApp = require("../models/marketApp");
+const MarketAppVersion = require("../models/marketAppVersion");
 const { authMiddleware, optionalAuth } = require("../middleware/auth");
 const { adminOnly, isAdmin } = require("../middleware/superAdmin");
 const { publicUrl, headObject, deleteObject } = require("../utils/r2");
 
 const router = express.Router();
 const VERSION_RE = /^v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+async function recordVersion(app, publishedBy) {
+  if (!app.fileKey) return null;
+  const payload = {
+    fileKey: app.fileKey,
+    fileUrl: app.fileUrl || publicUrl(app.fileKey),
+    size: app.size,
+    releaseNotes: app.releaseNotes || "",
+    allowNetwork: app.allowNetwork || "[]",
+    publishedBy: publishedBy || app.uploadedBy,
+    status: "active",
+  };
+  const [version, created] = await MarketAppVersion.findOrCreate({
+    where: { appId: app.id, version: app.version },
+    defaults: { appId: app.id, version: app.version, ...payload },
+  });
+  if (!created) await version.update(payload);
+  return version;
+}
+
+async function canViewApp(app, user) {
+  if (!app) return false;
+  return app.status === "approved" || isAdmin(user) || (user && user.id === app.uploadedBy);
+}
 
 // 把（DB 存入的 JSON 串或前端传入的数组）统一规整为字符串域名数组；
 // 仅保留字符串元素，过滤空值，避免注入非字符串内容。
@@ -153,6 +178,88 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
   res.json({ success: true, data });
 });
 
+// 获取版本历史。普通用户只看到可用版本，管理员和上传者可看到已下架版本。
+router.get("/apps/:id/versions", optionalAuth, async (req, res) => {
+  const app = await MarketApp.findByPk(req.params.id);
+  if (!(await canViewApp(app, req.user))) {
+    return res.status(404).json({ error: "应用不存在" });
+  }
+  const privileged = isAdmin(req.user) || (req.user && req.user.id === app.uploadedBy);
+  const versions = await MarketAppVersion.findAll({
+    where: {
+      appId: app.id,
+      ...(privileged ? {} : { status: "active" }),
+    },
+    attributes: ["id", "version", "size", "releaseNotes", "status", "createdAt", "updatedAt"],
+    order: [["createdAt", "DESC"]],
+  });
+  res.json({ success: true, data: versions });
+});
+
+// 下载指定历史版本。
+router.get("/apps/:id/versions/:versionId/download", async (req, res) => {
+  const app = await MarketApp.findByPk(req.params.id, { attributes: ["id", "name", "status"] });
+  const version = await MarketAppVersion.findOne({
+    where: { id: req.params.versionId, appId: req.params.id, status: "active" },
+  });
+  if (!app || app.status !== "approved" || !version) {
+    return res.status(404).json({ error: "应用版本不存在或已下架" });
+  }
+  MarketApp.increment("downloads", { by: 1, where: { id: app.id } }).catch(() => {});
+  res.json({
+    success: true,
+    data: {
+      name: app.name,
+      version: version.version,
+      fileUrl: version.fileUrl || publicUrl(version.fileKey),
+      allowNetwork: parseAllowNetwork(version.allowNetwork),
+    },
+  });
+});
+
+// 管理员下架/恢复版本。下架当前版本时自动回退市场最新版。
+router.put(
+  "/apps/:id/versions/:versionId/status",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const status = req.body?.status;
+    if (!['active', 'yanked'].includes(status)) {
+      return res.status(400).json({ error: "版本状态无效" });
+    }
+    const app = await MarketApp.findByPk(req.params.id);
+    const version = await MarketAppVersion.findOne({
+      where: { id: req.params.versionId, appId: req.params.id },
+    });
+    if (!app || !version) return res.status(404).json({ error: "应用版本不存在" });
+
+    if (status === "yanked" && version.version === app.version) {
+      const fallback = await MarketAppVersion.findOne({
+        where: {
+          appId: app.id,
+          status: "active",
+          id: { [Op.ne]: version.id },
+        },
+        order: [["createdAt", "DESC"]],
+      });
+      if (!fallback) {
+        return res.status(400).json({ error: "当前版本是唯一可用版本，无法下架" });
+      }
+      await app.update({
+        version: fallback.version,
+        fileKey: fallback.fileKey,
+        fileUrl: fallback.fileUrl,
+        size: fallback.size,
+        releaseNotes: fallback.releaseNotes || "",
+        allowNetwork: fallback.allowNetwork || "[]",
+      });
+    }
+
+    await version.update({ status });
+    res.json({ success: true, data: { id: version.id, status } });
+  },
+);
+
 // 下载应用 JS 包（只允许下载已通过的应用）
 router.get("/apps/:id/download", async (req, res) => {
   const app = await MarketApp.findByPk(req.params.id, {
@@ -227,7 +334,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
   // 幂等发布：同名 + 同作者已存在则更新（官方重发直接通过审核），否则新建
   const existing = await MarketApp.findOne({ where: { name, uploadedBy: req.user.id } });
   if (existing) {
-    const oldKey = existing.fileKey;
+    await recordVersion(existing, existing.uploadedBy);
     await existing.update({
       icon,
       description: description || existing.description || "",
@@ -241,9 +348,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
       allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
       status: isAdmin(req.user) ? "approved" : existing.status,
     });
-    if (oldKey && oldKey !== fileKey) {
-      await deleteObject(oldKey).catch(() => {});
-    }
+    await recordVersion(existing, req.user.id);
     return res.status(200).json({
       success: true,
       message: "更新成功",
@@ -268,6 +373,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
     uploadedBy: req.user.id,
     status: "pending",
   });
+  await recordVersion(app, req.user.id);
 
   res.status(201).json({
     success: true,
@@ -296,6 +402,7 @@ router.post(
     }
 
     await app.update({ status: "approved" });
+    await recordVersion(app, req.user.id);
 
     res.json({
       success: true,
@@ -374,7 +481,9 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     updateData.fileUrl = publicUrl(fileKey);
   }
 
+  await recordVersion(app, app.uploadedBy);
   await app.update(updateData);
+  await recordVersion(app, req.user.id);
 
   res.json({
     success: true,
@@ -390,7 +499,11 @@ router.delete("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     return res.status(404).json({ error: "应用不存在" });
   }
 
-  if (app.fileKey) await deleteObject(app.fileKey).catch(() => {});
+  const versions = await MarketAppVersion.findAll({ where: { appId: app.id } });
+  const keys = new Set(versions.map((version) => version.fileKey).filter(Boolean));
+  if (app.fileKey) keys.add(app.fileKey);
+  await Promise.all([...keys].map((key) => deleteObject(key).catch(() => {})));
+  await MarketAppVersion.destroy({ where: { appId: app.id } });
   await app.destroy();
 
   res.json({
