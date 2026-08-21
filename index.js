@@ -147,6 +147,10 @@ async function ensureIncrementalSchema() {
 let schemaReady = Promise.resolve();
 if (process.env.VERCEL) schemaReady = ensureIncrementalSchema();
 
+// CORS 必须先于数据库初始化门禁注册。前端的 X-Client-Geo 会触发 OPTIONS 预检，
+// 即使冷启动迁移失败或超时，也应先返回正确跨域头，让浏览器展示真实服务端错误。
+app.use(cors());
+
 app.use(async (req, res, next) => {
   try {
     await schemaReady;
@@ -155,8 +159,6 @@ app.use(async (req, res, next) => {
     next(error);
   }
 });
-
-app.use(cors());
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
