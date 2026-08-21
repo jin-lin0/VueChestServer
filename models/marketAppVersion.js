@@ -65,6 +65,27 @@ const MarketAppVersion = sequelize.define(
       allowNull: false,
       defaultValue: "approved",
     },
+    reviewCategory: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    },
+    reviewNote: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    reviewedBy: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    reviewedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    submissionCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 1,
+    },
   },
   {
     tableName: "market_app_versions",

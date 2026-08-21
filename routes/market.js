@@ -2,12 +2,49 @@ const express = require("express");
 const { Op, fn, col } = require("sequelize");
 const MarketApp = require("../models/marketApp");
 const MarketAppVersion = require("../models/marketAppVersion");
+const MarketAppVersionReview = require("../models/marketAppVersionReview");
 const { authMiddleware, optionalAuth } = require("../middleware/auth");
 const { adminOnly, isAdmin } = require("../middleware/superAdmin");
 const { publicUrl, headObject, deleteObject } = require("../utils/r2");
 
 const router = express.Router();
 const VERSION_RE = /^v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const REVIEW_CATEGORIES = new Set(["functionality", "security", "metadata", "compatibility", "other"]);
+
+function reviewFeedback(body, required = false) {
+  if (!required && !body?.category && !String(body?.message || "").trim()) {
+    return { category: null, message: "" };
+  }
+  const category = String(body?.category || "other").trim();
+  const message = String(body?.message || "").trim();
+  if (!REVIEW_CATEGORIES.has(category)) {
+    const error = new Error("审核问题类型无效");
+    error.status = 400;
+    throw error;
+  }
+  if (required && message.length < 2) {
+    const error = new Error("拒绝时必须填写至少 2 个字符的原因");
+    error.status = 400;
+    throw error;
+  }
+  if (message.length > 1000) {
+    const error = new Error("审核意见不能超过 1000 个字符");
+    error.status = 400;
+    throw error;
+  }
+  return { category, message };
+}
+
+async function recordReview(version, actorId, action, feedback = {}) {
+  return MarketAppVersionReview.create({
+    appId: version.appId,
+    versionId: version.id,
+    actorId,
+    action,
+    category: feedback.category || null,
+    message: feedback.message || null,
+  });
+}
 
 function parseVersion(value) {
   const [main, prerelease = ""] = String(value || "0").replace(/^v/i, "").split("-", 2);
@@ -98,15 +135,26 @@ async function createPendingVersion(app, payload, userId, fileSize) {
     publishedBy: userId,
     status: "active",
     reviewStatus: "pending",
+    reviewCategory: null,
+    reviewNote: null,
+    reviewedBy: null,
+    reviewedAt: null,
   };
+  let pending;
   if (existing) {
-    await existing.update(values);
-    return existing;
+    await existing.update({
+      ...values,
+      submissionCount: Number(existing.submissionCount || 1) + 1,
+    });
+    pending = existing;
+  } else {
+    pending = await MarketAppVersion.create({ ...values, submissionCount: 1 });
   }
-  return MarketAppVersion.create(values);
+  await recordReview(pending, userId, existing ? "resubmitted" : "submitted");
+  return pending;
 }
 
-async function approveVersion(app, version) {
+async function approveVersion(app, version, reviewerId, feedback = {}) {
   const metadata = version.metadata || {};
   await app.update({
     name: metadata.name || app.name,
@@ -124,7 +172,15 @@ async function approveVersion(app, version) {
     status: "approved",
     isListed: true,
   });
-  await version.update({ reviewStatus: "approved", status: "active" });
+  await version.update({
+    reviewStatus: "approved",
+    status: "active",
+    reviewCategory: feedback.category || null,
+    reviewNote: feedback.message || null,
+    reviewedBy: reviewerId,
+    reviewedAt: new Date(),
+  });
+  await recordReview(version, reviewerId, "approved", feedback);
 }
 
 // 把（DB 存入的 JSON 串或前端传入的数组）统一规整为字符串域名数组；
@@ -287,7 +343,7 @@ router.get("/apps/:id/versions", optionalAuth, async (req, res) => {
       appId: app.id,
       ...(privileged ? {} : { status: "active", reviewStatus: "approved" }),
     },
-    attributes: ["id", "version", "size", "releaseNotes", "status", "reviewStatus", "createdAt", "updatedAt"],
+    attributes: ["id", "version", "size", "releaseNotes", "status", "reviewStatus", "reviewCategory", "reviewNote", "reviewedAt", "submissionCount", "createdAt", "updatedAt"],
     order: [["createdAt", "DESC"]],
   });
   res.json({ success: true, data: versions });
@@ -496,7 +552,18 @@ router.post("/apps", authMiddleware, async (req, res) => {
     status: isAdmin(req.user) ? "approved" : "pending",
     isListed: true,
   });
-  await recordVersion(app, req.user.id, isAdmin(req.user) ? "approved" : "pending");
+  const createdVersion = await recordVersion(
+    app,
+    req.user.id,
+    isAdmin(req.user) ? "approved" : "pending",
+  );
+  if (createdVersion) {
+    await recordReview(
+      createdVersion,
+      req.user.id,
+      isAdmin(req.user) ? "approved" : "submitted",
+    );
+  }
 
   res.status(201).json({
     success: true,
@@ -527,7 +594,7 @@ router.post(
     const version = await MarketAppVersion.findOne({
       where: { appId: app.id, version: app.version },
     });
-    if (version) await approveVersion(app, version);
+    if (version) await approveVersion(app, version, req.user.id, reviewFeedback(req.body));
     else {
       await app.update({ status: "approved", isListed: true });
       await recordVersion(app, req.user.id, "approved");
@@ -550,11 +617,21 @@ router.post("/apps/:id/reject", authMiddleware, adminOnly, async (req, res) => {
     return res.status(400).json({ error: "应用已被拒绝" });
   }
 
+  const feedback = reviewFeedback(req.body, true);
+  const versions = await MarketAppVersion.findAll({
+    where: { appId: app.id, reviewStatus: "pending" },
+  });
   await app.update({ status: "rejected" });
-  await MarketAppVersion.update(
-    { reviewStatus: "rejected" },
-    { where: { appId: app.id, reviewStatus: "pending" } },
-  );
+  for (const version of versions) {
+    await version.update({
+      reviewStatus: "rejected",
+      reviewCategory: feedback.category,
+      reviewNote: feedback.message,
+      reviewedBy: req.user.id,
+      reviewedAt: new Date(),
+    });
+    await recordReview(version, req.user.id, "rejected", feedback);
+  }
 
   res.json({
     success: true,
@@ -596,7 +673,7 @@ router.post(
         error: `线上版本已是 v${app.version}，不能批准较低或相同版本`,
       });
     }
-    await approveVersion(app, version);
+    await approveVersion(app, version, req.user.id, reviewFeedback(req.body));
     res.json({ success: true, message: `v${version.version} 已通过审核` });
   },
 );
@@ -611,7 +688,15 @@ router.post(
       where: { id: req.params.versionId, appId: req.params.id, reviewStatus: "pending" },
     });
     if (!app || !version) return res.status(404).json({ error: "待审核版本不存在" });
-    await version.update({ reviewStatus: "rejected" });
+    const feedback = reviewFeedback(req.body, true);
+    await version.update({
+      reviewStatus: "rejected",
+      reviewCategory: feedback.category,
+      reviewNote: feedback.message,
+      reviewedBy: req.user.id,
+      reviewedAt: new Date(),
+    });
+    await recordReview(version, req.user.id, "rejected", feedback);
     if (app.status === "pending") await app.update({ status: "rejected" });
     res.json({ success: true, message: `v${version.version} 已拒绝` });
   },
@@ -691,6 +776,7 @@ router.delete("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
   const keys = new Set(versions.map((version) => version.fileKey).filter(Boolean));
   if (app.fileKey) keys.add(app.fileKey);
   await Promise.all([...keys].map((key) => deleteObject(key).catch(() => {})));
+  await MarketAppVersionReview.destroy({ where: { appId: app.id } });
   await MarketAppVersion.destroy({ where: { appId: app.id } });
   await app.destroy();
 

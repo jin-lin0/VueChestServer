@@ -7,6 +7,7 @@ const UserWorkspace = require("../models/userWorkspace");
 const WorkspaceTemplate = require("../models/workspaceTemplate");
 const MarketApp = require("../models/marketApp");
 const MarketAppVersion = require("../models/marketAppVersion");
+const MarketAppVersionReview = require("../models/marketAppVersionReview");
 
 const API_BASE = process.env.TEST_API_BASE || "http://127.0.0.1:3000";
 
@@ -198,6 +199,63 @@ async function main() {
     await testApp.reload();
     if (testApp.isListed !== false) throw new Error("developer unlisting failed");
 
+    const pendingV5 = await MarketAppVersion.create({
+      appId: testApp.id,
+      version: "5.0.0",
+      fileKey: `apps/${user.id}/fixture-v5.js`,
+      fileUrl: "https://example.invalid/fixture-v5.js",
+      size: 50,
+      releaseNotes: "v5 pending",
+      allowNetwork: "[]",
+      metadata: { name: testApp.name, icon: testApp.icon, description: "v5 review" },
+      publishedBy: user.id,
+      status: "active",
+      reviewStatus: "pending",
+      submissionCount: 1,
+    });
+    let missingReasonRejected = false;
+    try {
+      await request(`/api/market/apps/${testApp.id}/versions/${pendingV5.id}/reject`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({}),
+      });
+    } catch (error) {
+      missingReasonRejected = error.status === 400;
+    }
+    if (!missingReasonRejected) throw new Error("version rejection accepted an empty reason");
+    await request(`/api/market/apps/${testApp.id}/versions/${pendingV5.id}/reject`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ category: "compatibility", message: "请修复移动端兼容问题" }),
+    });
+    let reviewedApps = await request("/api/developer/apps", { headers: authHeaders });
+    let reviewedVersion = reviewedApps.data
+      .find((app) => app.id === testApp.id)
+      .versions.find((version) => version.id === pendingV5.id);
+    if (
+      reviewedVersion.reviewStatus !== "rejected" ||
+      reviewedVersion.reviewNote !== "请修复移动端兼容问题" ||
+      !reviewedVersion.reviews.some((review) => review.action === "rejected")
+    ) {
+      throw new Error("developer did not receive review feedback and history");
+    }
+    await request(`/api/developer/apps/${testApp.id}/versions/${pendingV5.id}/resubmit`, {
+      method: "POST",
+      headers: authHeaders,
+    });
+    reviewedApps = await request("/api/developer/apps", { headers: authHeaders });
+    reviewedVersion = reviewedApps.data
+      .find((app) => app.id === testApp.id)
+      .versions.find((version) => version.id === pendingV5.id);
+    if (
+      reviewedVersion.reviewStatus !== "pending" ||
+      reviewedVersion.submissionCount !== 2 ||
+      !reviewedVersion.reviews.some((review) => review.action === "resubmitted")
+    ) {
+      throw new Error("version resubmission did not preserve review history");
+    }
+
     await request("/api/auth/workspace", { method: "DELETE", headers: authHeaders });
     await request("/api/auth/logout", { method: "POST", headers: authHeaders });
 
@@ -209,9 +267,10 @@ async function main() {
     }
     if (!revoked) throw new Error("revoked token remained usable");
 
-    console.log("PLATFORM_INTEGRATION_OK", JSON.stringify({ sessions: true, cloud: true, templates: true, versions: true, developer: true, revoke: true }));
+    console.log("PLATFORM_INTEGRATION_OK", JSON.stringify({ sessions: true, cloud: true, templates: true, versions: true, developer: true, reviewFeedback: true, resubmit: true, revoke: true }));
   } finally {
     if (testApp) {
+      await MarketAppVersionReview.destroy({ where: { appId: testApp.id }, force: true });
       await MarketAppVersion.destroy({ where: { appId: testApp.id }, force: true });
       await testApp.destroy({ force: true });
     }

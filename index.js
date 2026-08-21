@@ -6,6 +6,7 @@ require("dotenv").config();
 const sequelize = require("./config/database");
 const MarketApp = require("./models/marketApp");
 const MarketAppVersion = require("./models/marketAppVersion");
+const MarketAppVersionReview = require("./models/marketAppVersionReview");
 const AppComment = require("./models/appComment");
 const UserWorkspace = require("./models/userWorkspace");
 const WorkspaceTemplate = require("./models/workspaceTemplate");
@@ -55,6 +56,38 @@ async function ensureMarketVersions() {
       defaultValue: "approved",
     });
   }
+  if (!versionColumns.reviewCategory) {
+    await queryInterface.addColumn("market_app_versions", "reviewCategory", {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+    });
+  }
+  if (!versionColumns.reviewNote) {
+    await queryInterface.addColumn("market_app_versions", "reviewNote", {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    });
+  }
+  if (!versionColumns.reviewedBy) {
+    await queryInterface.addColumn("market_app_versions", "reviewedBy", {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    });
+  }
+  if (!versionColumns.reviewedAt) {
+    await queryInterface.addColumn("market_app_versions", "reviewedAt", {
+      type: DataTypes.DATE,
+      allowNull: true,
+    });
+  }
+  if (!versionColumns.submissionCount) {
+    await queryInterface.addColumn("market_app_versions", "submissionCount", {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 1,
+    });
+  }
+  await MarketAppVersionReview.sync();
   const apps = await MarketApp.findAll({ where: { fileKey: { [Op.ne]: null } } });
   for (const app of apps) {
     const [version] = await MarketAppVersion.findOrCreate({
@@ -104,6 +137,7 @@ async function ensureIncrementalSchema() {
     WorkspaceTemplate.sync(),
     UserSession.sync(),
     MarketAppVersion.sync(),
+    MarketAppVersionReview.sync(),
   ]);
   await ensureMarketVersions();
 }
