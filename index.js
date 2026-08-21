@@ -14,13 +14,20 @@ const UserSession = require("./models/userSession");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-async function ensureMarketReleaseNotesColumn() {
+async function ensureMarketColumns() {
   const queryInterface = sequelize.getQueryInterface();
   const columns = await queryInterface.describeTable("market_apps");
   if (!columns.releaseNotes) {
     await queryInterface.addColumn("market_apps", "releaseNotes", {
       type: DataTypes.TEXT,
       allowNull: true,
+    });
+  }
+  if (!columns.isListed) {
+    await queryInterface.addColumn("market_apps", "isListed", {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
     });
   }
 }
@@ -35,9 +42,22 @@ async function ensureMarketVersions() {
       allowNull: true,
     });
   }
+  if (!versionColumns.metadata) {
+    await queryInterface.addColumn("market_app_versions", "metadata", {
+      type: DataTypes.TEXT("long"),
+      allowNull: true,
+    });
+  }
+  if (!versionColumns.reviewStatus) {
+    await queryInterface.addColumn("market_app_versions", "reviewStatus", {
+      type: DataTypes.ENUM("pending", "approved", "rejected", "withdrawn"),
+      allowNull: false,
+      defaultValue: "approved",
+    });
+  }
   const apps = await MarketApp.findAll({ where: { fileKey: { [Op.ne]: null } } });
   for (const app of apps) {
-    await MarketAppVersion.findOrCreate({
+    const [version] = await MarketAppVersion.findOrCreate({
       where: { appId: app.id, version: app.version },
       defaults: {
         appId: app.id,
@@ -47,15 +67,37 @@ async function ensureMarketVersions() {
         size: app.size,
         releaseNotes: app.releaseNotes || "",
         allowNetwork: app.allowNetwork || "[]",
+        metadata: {
+          name: app.name,
+          icon: app.icon,
+          description: app.description || "",
+          category: app.category || "",
+          readme: app.readme || "",
+          screenshots: app.screenshots || null,
+        },
         publishedBy: app.uploadedBy,
         status: "active",
+        reviewStatus: "approved",
       },
     });
+    if (!version.metadata || Object.keys(version.metadata).length === 0) {
+      await version.update({
+        metadata: {
+          name: app.name,
+          icon: app.icon,
+          description: app.description || "",
+          category: app.category || "",
+          readme: app.readme || "",
+          screenshots: app.screenshots || null,
+        },
+        reviewStatus: version.reviewStatus || "approved",
+      });
+    }
   }
 }
 
 async function ensureIncrementalSchema() {
-  await ensureMarketReleaseNotesColumn();
+  await ensureMarketColumns();
   await Promise.all([
     AppComment.sync({ alter: true }),
     UserWorkspace.sync(),
@@ -162,13 +204,16 @@ app.use("/api/music-favorites", musicFavoritesRouter);
 const workspaceTemplatesRouter = require("./routes/workspaceTemplates");
 app.use("/api/workspace-templates", workspaceTemplatesRouter);
 
+const developerRouter = require("./routes/developer");
+app.use("/api/developer", developerRouter);
+
 // 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
 if (!process.env.VERCEL) {
   sequelize
     .sync()
     .then(() =>
-      ensureMarketReleaseNotesColumn().catch((err) =>
-        console.warn("MarketApp releaseNotes 列同步跳过:", err.message),
+      ensureMarketColumns().catch((err) =>
+        console.warn("MarketApp 增量列同步跳过:", err.message),
       ),
     )
     .then(() => ensureMarketVersions())

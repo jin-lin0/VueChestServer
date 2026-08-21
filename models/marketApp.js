@@ -62,6 +62,11 @@ const MarketApp = sequelize.define(
       type: DataTypes.BOOLEAN,
       defaultValue: false,
     },
+    isListed: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
     downloads: {
       type: DataTypes.INTEGER,
       defaultValue: 0,

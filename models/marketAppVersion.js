@@ -37,6 +37,20 @@ const MarketAppVersion = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    metadata: {
+      type: DataTypes.TEXT("long"),
+      allowNull: true,
+      get() {
+        try {
+          return JSON.parse(this.getDataValue("metadata") || "{}");
+        } catch {
+          return {};
+        }
+      },
+      set(value) {
+        this.setDataValue("metadata", JSON.stringify(value || {}));
+      },
+    },
     publishedBy: {
       type: DataTypes.INTEGER,
       allowNull: false,
@@ -46,6 +60,11 @@ const MarketAppVersion = sequelize.define(
       allowNull: false,
       defaultValue: "active",
     },
+    reviewStatus: {
+      type: DataTypes.ENUM("pending", "approved", "rejected", "withdrawn"),
+      allowNull: false,
+      defaultValue: "approved",
+    },
   },
   {
     tableName: "market_app_versions",
@@ -53,6 +72,7 @@ const MarketAppVersion = sequelize.define(
     indexes: [
       { unique: true, fields: ["appId", "version"] },
       { fields: ["appId", "status"] },
+      { fields: ["reviewStatus", "createdAt"] },
     ],
   },
 );

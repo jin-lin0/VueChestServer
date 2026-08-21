@@ -147,6 +147,57 @@ async function main() {
     await testApp.reload();
     if (testApp.version !== v1.version) throw new Error("yanking current version did not roll back market latest");
 
+    const pendingV3 = await MarketAppVersion.create({
+      appId: testApp.id,
+      version: "3.0.0",
+      fileKey: `apps/${user.id}/fixture-v3.js`,
+      fileUrl: "https://example.invalid/fixture-v3.js",
+      size: 30,
+      releaseNotes: "v3 pending",
+      allowNetwork: "[]",
+      metadata: { name: testApp.name, icon: testApp.icon, description: "v3" },
+      publishedBy: user.id,
+      status: "active",
+      reviewStatus: "pending",
+    });
+    const developerApps = await request("/api/developer/apps", { headers: authHeaders });
+    if (!developerApps.data.some((app) => app.id === testApp.id)) {
+      throw new Error("developer center did not return owned app");
+    }
+    await request(`/api/developer/apps/${testApp.id}/versions/${pendingV3.id}/withdraw`, {
+      method: "POST",
+      headers: authHeaders,
+    });
+    await pendingV3.reload();
+    if (pendingV3.reviewStatus !== "withdrawn") throw new Error("developer version withdrawal failed");
+
+    const pendingV4 = await MarketAppVersion.create({
+      appId: testApp.id,
+      version: "4.0.0",
+      fileKey: `apps/${user.id}/fixture-v4.js`,
+      fileUrl: "https://example.invalid/fixture-v4.js",
+      size: 40,
+      releaseNotes: "v4 pending",
+      allowNetwork: "[]",
+      metadata: { name: testApp.name, icon: testApp.icon, description: "v4 approved" },
+      publishedBy: user.id,
+      status: "active",
+      reviewStatus: "pending",
+    });
+    await request(`/api/market/apps/${testApp.id}/versions/${pendingV4.id}/approve`, {
+      method: "POST",
+      headers: authHeaders,
+    });
+    await testApp.reload();
+    if (testApp.version !== "4.0.0") throw new Error("approved version did not become market latest");
+    await request(`/api/developer/apps/${testApp.id}/listing`, {
+      method: "PUT",
+      headers: authHeaders,
+      body: JSON.stringify({ isListed: false }),
+    });
+    await testApp.reload();
+    if (testApp.isListed !== false) throw new Error("developer unlisting failed");
+
     await request("/api/auth/workspace", { method: "DELETE", headers: authHeaders });
     await request("/api/auth/logout", { method: "POST", headers: authHeaders });
 
@@ -158,7 +209,7 @@ async function main() {
     }
     if (!revoked) throw new Error("revoked token remained usable");
 
-    console.log("PLATFORM_INTEGRATION_OK", JSON.stringify({ sessions: true, cloud: true, templates: true, versions: true, revoke: true }));
+    console.log("PLATFORM_INTEGRATION_OK", JSON.stringify({ sessions: true, cloud: true, templates: true, versions: true, developer: true, revoke: true }));
   } finally {
     if (testApp) {
       await MarketAppVersion.destroy({ where: { appId: testApp.id }, force: true });

@@ -9,7 +9,36 @@ const { publicUrl, headObject, deleteObject } = require("../utils/r2");
 const router = express.Router();
 const VERSION_RE = /^v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-async function recordVersion(app, publishedBy) {
+function parseVersion(value) {
+  const [main, prerelease = ""] = String(value || "0").replace(/^v/i, "").split("-", 2);
+  return { parts: main.split(".").map((part) => parseInt(part, 10) || 0), prerelease };
+}
+
+function compareVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  const length = Math.max(a.parts.length, b.parts.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a.parts[index] || 0) - (b.parts[index] || 0);
+    if (diff) return diff > 0 ? 1 : -1;
+  }
+  if (!a.prerelease && b.prerelease) return 1;
+  if (a.prerelease && !b.prerelease) return -1;
+  return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true });
+}
+
+function versionMetadata(app, overrides = {}) {
+  return {
+    name: overrides.name ?? app.name,
+    icon: overrides.icon ?? app.icon,
+    description: overrides.description ?? app.description ?? "",
+    category: overrides.category ?? app.category ?? "",
+    readme: overrides.readme ?? app.readme ?? "",
+    screenshots: overrides.screenshots ?? app.screenshots ?? null,
+  };
+}
+
+async function recordVersion(app, publishedBy, reviewStatus = "approved") {
   if (!app.fileKey) return null;
   const payload = {
     fileKey: app.fileKey,
@@ -17,8 +46,10 @@ async function recordVersion(app, publishedBy) {
     size: app.size,
     releaseNotes: app.releaseNotes || "",
     allowNetwork: app.allowNetwork || "[]",
+    metadata: versionMetadata(app),
     publishedBy: publishedBy || app.uploadedBy,
     status: "active",
+    reviewStatus,
   };
   const [version, created] = await MarketAppVersion.findOrCreate({
     where: { appId: app.id, version: app.version },
@@ -31,6 +62,69 @@ async function recordVersion(app, publishedBy) {
 async function canViewApp(app, user) {
   if (!app) return false;
   return app.status === "approved" || isAdmin(user) || (user && user.id === app.uploadedBy);
+}
+
+async function createPendingVersion(app, payload, userId, fileSize) {
+  const version = String(payload.version || "").trim();
+  if (compareVersions(version, app.version) <= 0) {
+    const error = new Error(`新版本必须高于当前线上版本 v${app.version}`);
+    error.status = 400;
+    throw error;
+  }
+  const existing = await MarketAppVersion.findOne({ where: { appId: app.id, version } });
+  if (existing && existing.reviewStatus === "approved") {
+    const error = new Error("该版本号已发布，请提高版本号");
+    error.status = 409;
+    throw error;
+  }
+  const values = {
+    appId: app.id,
+    version,
+    fileKey: payload.fileKey,
+    fileUrl: publicUrl(payload.fileKey),
+    size: fileSize,
+    releaseNotes: payload.releaseNotes || "",
+    allowNetwork: JSON.stringify(parseAllowNetwork(payload.allowNetwork)),
+    metadata: versionMetadata(app, {
+      name: payload.name,
+      icon: payload.icon,
+      description: payload.description,
+      category: payload.category,
+      readme: payload.readme,
+      screenshots: Array.isArray(payload.screenshots)
+        ? JSON.stringify(payload.screenshots)
+        : app.screenshots,
+    }),
+    publishedBy: userId,
+    status: "active",
+    reviewStatus: "pending",
+  };
+  if (existing) {
+    await existing.update(values);
+    return existing;
+  }
+  return MarketAppVersion.create(values);
+}
+
+async function approveVersion(app, version) {
+  const metadata = version.metadata || {};
+  await app.update({
+    name: metadata.name || app.name,
+    icon: metadata.icon || app.icon,
+    description: metadata.description ?? app.description,
+    category: metadata.category ?? app.category,
+    readme: metadata.readme ?? app.readme,
+    screenshots: metadata.screenshots ?? app.screenshots,
+    version: version.version,
+    fileKey: version.fileKey,
+    fileUrl: version.fileUrl,
+    size: version.size,
+    releaseNotes: version.releaseNotes || "",
+    allowNetwork: version.allowNetwork || "[]",
+    status: "approved",
+    isListed: true,
+  });
+  await version.update({ reviewStatus: "approved", status: "active" });
 }
 
 // 把（DB 存入的 JSON 串或前端传入的数组）统一规整为字符串域名数组；
@@ -55,7 +149,7 @@ function parseAllowNetwork(raw) {
 router.get("/categories", async (req, res) => {
   const rows = await MarketApp.findAll({
     attributes: ["category", [fn("COUNT", col("id")), "count"]],
-    where: { status: "approved" },
+    where: { status: "approved", isListed: true },
     group: ["category"],
     raw: true,
   });
@@ -76,6 +170,7 @@ router.get("/apps", optionalAuth, async (req, res) => {
   // 非管理员只看到已通过的应用
   if (!isAdmin(req.user)) {
     where.status = "approved";
+    where.isListed = true;
   }
   if (category) {
     where.category = category;
@@ -97,6 +192,7 @@ router.get("/apps", optionalAuth, async (req, res) => {
     "category",
     "size",
     "isOfficial",
+    "isListed",
     "downloads",
     "status",
     "allowNetwork",
@@ -144,6 +240,7 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
       "readme",
       "releaseNotes",
       "isOfficial",
+      "isListed",
       "downloads",
       "status",
       "fileKey",
@@ -188,9 +285,9 @@ router.get("/apps/:id/versions", optionalAuth, async (req, res) => {
   const versions = await MarketAppVersion.findAll({
     where: {
       appId: app.id,
-      ...(privileged ? {} : { status: "active" }),
+      ...(privileged ? {} : { status: "active", reviewStatus: "approved" }),
     },
-    attributes: ["id", "version", "size", "releaseNotes", "status", "createdAt", "updatedAt"],
+    attributes: ["id", "version", "size", "releaseNotes", "status", "reviewStatus", "createdAt", "updatedAt"],
     order: [["createdAt", "DESC"]],
   });
   res.json({ success: true, data: versions });
@@ -200,7 +297,12 @@ router.get("/apps/:id/versions", optionalAuth, async (req, res) => {
 router.get("/apps/:id/versions/:versionId/download", async (req, res) => {
   const app = await MarketApp.findByPk(req.params.id, { attributes: ["id", "name", "status"] });
   const version = await MarketAppVersion.findOne({
-    where: { id: req.params.versionId, appId: req.params.id, status: "active" },
+    where: {
+      id: req.params.versionId,
+      appId: req.params.id,
+      status: "active",
+      reviewStatus: "approved",
+    },
   });
   if (!app || app.status !== "approved" || !version) {
     return res.status(404).json({ error: "应用版本不存在或已下架" });
@@ -238,6 +340,7 @@ router.put(
         where: {
           appId: app.id,
           status: "active",
+          reviewStatus: "approved",
           id: { [Op.ne]: version.id },
         },
         order: [["createdAt", "DESC"]],
@@ -335,6 +438,25 @@ router.post("/apps", authMiddleware, async (req, res) => {
   const existing = await MarketApp.findOne({ where: { name, uploadedBy: req.user.id } });
   if (existing) {
     await recordVersion(existing, existing.uploadedBy);
+    if (!isAdmin(req.user)) {
+      const pending = await createPendingVersion(
+        existing,
+        req.body,
+        req.user.id,
+        fileObject.ContentLength || Number(fileSize),
+      );
+      return res.status(202).json({
+        success: true,
+        message: "新版本已提交审核",
+        data: {
+          id: existing.id,
+          name: existing.name,
+          version: pending.version,
+          status: pending.reviewStatus,
+          versionId: pending.id,
+        },
+      });
+    }
     await existing.update({
       icon,
       description: description || existing.description || "",
@@ -371,9 +493,10 @@ router.post("/apps", authMiddleware, async (req, res) => {
     releaseNotes: releaseNotes || "",
     allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
     uploadedBy: req.user.id,
-    status: "pending",
+    status: isAdmin(req.user) ? "approved" : "pending",
+    isListed: true,
   });
-  await recordVersion(app, req.user.id);
+  await recordVersion(app, req.user.id, isAdmin(req.user) ? "approved" : "pending");
 
   res.status(201).json({
     success: true,
@@ -382,7 +505,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
       id: app.id,
       name: app.name,
       version: app.version,
-      status: app.status,
+      status: app.status === "approved" ? "approved" : "pending",
     },
   });
 });
@@ -401,8 +524,14 @@ router.post(
       return res.status(400).json({ error: "应用已通过审核" });
     }
 
-    await app.update({ status: "approved" });
-    await recordVersion(app, req.user.id);
+    const version = await MarketAppVersion.findOne({
+      where: { appId: app.id, version: app.version },
+    });
+    if (version) await approveVersion(app, version);
+    else {
+      await app.update({ status: "approved", isListed: true });
+      await recordVersion(app, req.user.id, "approved");
+    }
 
     res.json({
       success: true,
@@ -422,12 +551,71 @@ router.post("/apps/:id/reject", authMiddleware, adminOnly, async (req, res) => {
   }
 
   await app.update({ status: "rejected" });
+  await MarketAppVersion.update(
+    { reviewStatus: "rejected" },
+    { where: { appId: app.id, reviewStatus: "pending" } },
+  );
 
   res.json({
     success: true,
     message: "应用已拒绝",
   });
 });
+
+router.get("/admin/pending-versions", authMiddleware, adminOnly, async (req, res) => {
+  const versions = await MarketAppVersion.findAll({
+    where: { reviewStatus: "pending" },
+    order: [["createdAt", "ASC"]],
+  });
+  const apps = await MarketApp.findAll({
+    where: { id: { [Op.in]: [...new Set(versions.map((version) => version.appId))] } },
+    attributes: ["id", "name", "icon", "uploadedBy", "version", "status"],
+  });
+  const appMap = new Map(apps.map((app) => [app.id, app.toJSON()]));
+  res.json({
+    success: true,
+    data: versions.map((version) => ({
+      ...version.toJSON(),
+      app: appMap.get(version.appId),
+    })),
+  });
+});
+
+router.post(
+  "/apps/:id/versions/:versionId/approve",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const app = await MarketApp.findByPk(req.params.id);
+    const version = await MarketAppVersion.findOne({
+      where: { id: req.params.versionId, appId: req.params.id, reviewStatus: "pending" },
+    });
+    if (!app || !version) return res.status(404).json({ error: "待审核版本不存在" });
+    if (app.status === "approved" && compareVersions(version.version, app.version) <= 0) {
+      return res.status(409).json({
+        error: `线上版本已是 v${app.version}，不能批准较低或相同版本`,
+      });
+    }
+    await approveVersion(app, version);
+    res.json({ success: true, message: `v${version.version} 已通过审核` });
+  },
+);
+
+router.post(
+  "/apps/:id/versions/:versionId/reject",
+  authMiddleware,
+  adminOnly,
+  async (req, res) => {
+    const app = await MarketApp.findByPk(req.params.id);
+    const version = await MarketAppVersion.findOne({
+      where: { id: req.params.versionId, appId: req.params.id, reviewStatus: "pending" },
+    });
+    if (!app || !version) return res.status(404).json({ error: "待审核版本不存在" });
+    await version.update({ reviewStatus: "rejected" });
+    if (app.status === "pending") await app.update({ status: "rejected" });
+    res.json({ success: true, message: `v${version.version} 已拒绝` });
+  },
+);
 
 // 更新应用
 router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
