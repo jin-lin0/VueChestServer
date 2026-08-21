@@ -12,9 +12,10 @@ const sequelize = new Sequelize(
     dialectModule: require("mysql2"),
     logging: false,
     pool: {
-      max: 5,
+      // Serverless 每个实例只保留一个连接，避免多实例冷启动耗尽 MySQL 连接数。
+      max: process.env.VERCEL ? 1 : 5,
       min: 0,
-      acquire: 30000,
+      acquire: process.env.VERCEL ? 8000 : 30000,
       idle: 10000,
     },
   }

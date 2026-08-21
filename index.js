@@ -129,36 +129,9 @@ async function ensureMarketVersions() {
   }
 }
 
-async function ensureIncrementalSchema() {
-  await ensureMarketColumns();
-  await Promise.all([
-    // 冷启动禁止 alter：旧库外键命名可能与 Sequelize 推导不一致，
-    // alter 会尝试删除不存在的约束并让所有 API 初始化失败。
-    AppComment.sync(),
-    UserWorkspace.sync(),
-    WorkspaceTemplate.sync(),
-    UserSession.sync(),
-    MarketAppVersion.sync(),
-    MarketAppVersionReview.sync(),
-  ]);
-  await ensureMarketVersions();
-}
-
-let schemaReady = Promise.resolve();
-if (process.env.VERCEL) schemaReady = ensureIncrementalSchema();
-
 // CORS 必须先于数据库初始化门禁注册。前端的 X-Client-Geo 会触发 OPTIONS 预检，
 // 即使冷启动迁移失败或超时，也应先返回正确跨域头，让浏览器展示真实服务端错误。
 app.use(cors());
-
-app.use(async (req, res, next) => {
-  try {
-    await schemaReady;
-    next();
-  } catch (error) {
-    next(error);
-  }
-});
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -267,11 +240,9 @@ if (!process.env.VERCEL) {
       console.error("Unable to sync database:", err);
     });
 } else {
-  // Vercel：跳过整体 sync 以加速冷启动，但显式确保新增的 app_comments 表存在
-  // （向前兼容，非迁移脚本；本地非 VERCEL 环境由上面的 sequelize.sync() 统一建表）
-  schemaReady
-    .then(() => console.log("增量数据表已就绪"))
-    .catch((err) => console.warn("增量数据表同步跳过:", err.message));
+  // Vercel 请求链路禁止执行 schema sync/alter。数据库迁移必须在部署前独立完成，
+  // 避免多实例冷启动同时占用连接并阻塞全部业务请求。
+  console.log("Vercel runtime: schema migration skipped");
 }
 
 // 全局错误处理中间件（兜底所有未捕获的异常，统一错误响应格式）
