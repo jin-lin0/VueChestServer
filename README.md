@@ -83,6 +83,7 @@ R2 桶需要允许 `https://app.020201.xyz` 的 `PUT`、`GET`、`HEAD` 请求，
 | `/api/questions` | `routes/questions.js` | 面试题库                       |
 | `/api/messages`  | `routes/messages.js`  | 消息/AI 聊天                   |
 | `/api/netease`   | `routes/netease.js`   | 网易云音乐 API                 |
+| `/api/research-stocks` | `routes/stockResearch.js` | A 股大盘、估值、财务与公司公告 |
 | `/health`        | index.js                | 健康检查                       |
 
 ## 部署到 Vercel

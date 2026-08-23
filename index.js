@@ -218,6 +218,10 @@ app.use("/api/workspace-templates", workspaceTemplatesRouter);
 const developerRouter = require("./routes/developer");
 app.use("/api/developer", developerRouter);
 
+// A 股研究数据：免密上游聚合（大盘、估值、财务与公告）
+const stockResearchRouter = require("./routes/stockResearch");
+app.use("/api/research-stocks", stockResearchRouter);
+
 // 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
 if (!process.env.VERCEL) {
   sequelize
