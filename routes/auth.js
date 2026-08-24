@@ -4,6 +4,7 @@ const { Op } = require("sequelize");
 const User = require("../models/user");
 const UserWorkspace = require("../models/userWorkspace");
 const UserSession = require("../models/userSession");
+const MarketApp = require("../models/marketApp");
 const { authMiddleware } = require("../middleware/auth");
 const { sendVerificationEmail, sendResetCodeEmail } = require("../utils/mail");
 const {
@@ -12,6 +13,10 @@ const {
   CODE_TTL_MS,
   RESEND_COOLDOWN_MS,
 } = require("../utils/verificationCode");
+const {
+  normalizeInstalledAppIds,
+  selectExistingAppIds,
+} = require("../utils/installedApps");
 
 const router = express.Router();
 
@@ -41,7 +46,10 @@ function detectDevice(req) {
   return {
     deviceName: `${name} · ${browser}`,
     userAgent: ua,
-    ip: String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim().slice(0, 64),
+    ip: String(req.headers["x-forwarded-for"] || req.ip || "")
+      .split(",")[0]
+      .trim()
+      .slice(0, 64),
   };
 }
 
@@ -54,7 +62,12 @@ async function createLoginSession(user, req) {
     expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
   });
   const token = jwt.sign(
-    { id: user.id, username: user.username, role: user.role, sessionId: session.id },
+    {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      sessionId: session.id,
+    },
     process.env.JWT_SECRET,
     { expiresIn: "7d" },
   );
@@ -77,7 +90,11 @@ function sanitizeWorkspaceConfig(raw) {
     throw error;
   }
 
-  if (!Array.isArray(raw.workspaces) || raw.workspaces.length < 1 || raw.workspaces.length > 8) {
+  if (
+    !Array.isArray(raw.workspaces) ||
+    raw.workspaces.length < 1 ||
+    raw.workspaces.length > 8
+  ) {
     const error = new Error("工作区数量必须在 1 到 8 个之间");
     error.status = 400;
     error.code = "VALIDATION_ERROR";
@@ -93,7 +110,9 @@ function sanitizeWorkspaceConfig(raw) {
     }
 
     const id = String(workspace.id || "").slice(0, 64);
-    const name = String(workspace.name || "").trim().slice(0, 20);
+    const name = String(workspace.name || "")
+      .trim()
+      .slice(0, 20);
     if (!id || !name) {
       const error = new Error("工作区 ID 和名称不能为空");
       error.status = 400;
@@ -119,7 +138,9 @@ function sanitizeWorkspaceConfig(raw) {
   return {
     version: 1,
     workspaces,
-    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : Date.now(),
+    updatedAt: Number.isFinite(Number(raw.updatedAt))
+      ? Number(raw.updatedAt)
+      : Date.now(),
   };
 }
 
@@ -384,7 +405,9 @@ router.post("/login", async (req, res) => {
   }
 
   // 识别为邮箱则按 email 查，否则按 username 查
-  const query = EMAIL_RE.test(identifier) ? { email: identifier } : { username: identifier };
+  const query = EMAIL_RE.test(identifier)
+    ? { email: identifier }
+    : { username: identifier };
 
   const user = await User.findOne({ where: query });
 
@@ -453,8 +476,19 @@ router.post("/logout", authMiddleware, async (req, res) => {
 
 router.get("/sessions", authMiddleware, async (req, res) => {
   const sessions = await UserSession.findAll({
-    where: { userId: req.user.id, revokedAt: null, expiresAt: { [Op.gt]: new Date() } },
-    attributes: ["id", "deviceName", "ip", "lastActiveAt", "expiresAt", "createdAt"],
+    where: {
+      userId: req.user.id,
+      revokedAt: null,
+      expiresAt: { [Op.gt]: new Date() },
+    },
+    attributes: [
+      "id",
+      "deviceName",
+      "ip",
+      "lastActiveAt",
+      "expiresAt",
+      "createdAt",
+    ],
     order: [["lastActiveAt", "DESC"]],
   });
   res.json({
@@ -486,7 +520,10 @@ router.delete("/sessions/:id", authMiddleware, async (req, res) => {
   });
   if (!session) return res.status(404).json({ error: "设备会话不存在" });
   await session.update({ revokedAt: new Date() });
-  res.json({ success: true, data: { revokedCurrent: session.id === req.user.sessionId } });
+  res.json({
+    success: true,
+    data: { revokedCurrent: session.id === req.user.sessionId },
+  });
 });
 
 // 修改个人资料（当前支持修改登录用户名/昵称）
@@ -560,10 +597,11 @@ router.get("/installed-apps", authMiddleware, async (req, res) => {
 
 // 全量更新已安装应用列表（合并用）
 router.put("/installed-apps", authMiddleware, async (req, res) => {
-  const { installedApps } = req.body;
-
-  if (!Array.isArray(installedApps)) {
-    return res.status(400).json({ error: "installedApps 必须是数组" });
+  let requestedIds;
+  try {
+    requestedIds = normalizeInstalledAppIds(req.body.installedApps);
+  } catch (error) {
+    return res.status(error.status || 400).json({ error: error.message });
   }
 
   const user = await User.findByPk(req.user.id);
@@ -571,29 +609,46 @@ router.put("/installed-apps", authMiddleware, async (req, res) => {
     return res.status(404).json({ error: "用户不存在" });
   }
 
+  const rows = requestedIds.length
+    ? await MarketApp.findAll({
+        where: { id: { [Op.in]: requestedIds }, status: "approved" },
+        attributes: ["id"],
+      })
+    : [];
+  const installedApps = selectExistingAppIds(requestedIds, rows);
+  const ignoredIds = requestedIds.filter((id) => !installedApps.includes(id));
+
   await user.update({ installedApps });
 
   res.json({
     success: true,
     data: installedApps,
+    ignoredIds,
   });
 });
 
 // ─── 个人工作台云同步 ─────────────────────────
 
 router.get("/workspace", authMiddleware, async (req, res) => {
-  const workspace = await UserWorkspace.findOne({ where: { userId: req.user.id } });
+  const workspace = await UserWorkspace.findOne({
+    where: { userId: req.user.id },
+  });
   res.json({
     success: true,
     data: workspace
-      ? { config: workspace.config, updatedAt: workspace.updatedAt.toISOString() }
+      ? {
+          config: workspace.config,
+          updatedAt: workspace.updatedAt.toISOString(),
+        }
       : null,
   });
 });
 
 router.put("/workspace", authMiddleware, async (req, res) => {
   const config = sanitizeWorkspaceConfig(req.body?.config);
-  let workspace = await UserWorkspace.findOne({ where: { userId: req.user.id } });
+  let workspace = await UserWorkspace.findOne({
+    where: { userId: req.user.id },
+  });
 
   if (workspace) {
     await workspace.update({ config });
@@ -603,7 +658,10 @@ router.put("/workspace", authMiddleware, async (req, res) => {
 
   res.json({
     success: true,
-    data: { config: workspace.config, updatedAt: workspace.updatedAt.toISOString() },
+    data: {
+      config: workspace.config,
+      updatedAt: workspace.updatedAt.toISOString(),
+    },
   });
 });
 
