@@ -43,7 +43,7 @@ const Question = sequelize.define(
     tableName: "questions",
     timestamps: true,
     updatedAt: false,
-  }
+  },
 );
 
 // 建立关联关系

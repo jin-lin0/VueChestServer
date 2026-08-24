@@ -33,11 +33,12 @@ function publicUrl(key) {
   return `${PUBLIC_URL}/${key}`;
 }
 
-async function createUploadUrl(key, contentType) {
+async function createUploadUrl(key, contentType, metadata) {
   const command = new PutObjectCommand({
     Bucket: BUCKET,
     Key: key,
     ContentType: contentType,
+    ...(metadata ? { Metadata: metadata } : {}),
   });
   return getSignedUrl(getClient(), command, { expiresIn: 600 });
 }

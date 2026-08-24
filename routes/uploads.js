@@ -9,6 +9,10 @@ const {
   publicUrl,
 } = require("../utils/r2");
 const slugify = require("../utils/slugify");
+const {
+  normalizeSha256,
+  assertObjectIntegrity,
+} = require("../utils/bundleIntegrity");
 
 const router = express.Router();
 const limits = {
@@ -23,12 +27,7 @@ const types = {
     "text/javascript",
     "application/x-javascript",
   ]),
-  screenshot: new Set([
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "image/gif",
-  ]),
+  screenshot: new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]),
 };
 
 router.post("/presign", authMiddleware, async (req, res) => {
@@ -53,12 +52,24 @@ router.post("/presign", authMiddleware, async (req, res) => {
   );
   // app 用稳定 key（apps/<userId>/<slug>.js）覆盖式更新，避免每次随机后缀在 R2 堆积；
   // 头像/截图仍加随机后缀，防止不同文件互相覆盖。
-  const suffix = kind === "app" && name ? "" : `-${crypto.randomUUID().slice(0, 8)}`;
+  const suffix =
+    kind === "app" && name ? "" : `-${crypto.randomUUID().slice(0, 8)}`;
   const key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${readableName}${suffix}.${extension}`;
-  const uploadUrl = await createUploadUrl(key, contentType);
+  const sha256 = kind === "app" ? normalizeSha256(req.body.sha256, true) : null;
+  const uploadUrl = await createUploadUrl(
+    key,
+    contentType,
+    sha256 ? { sha256 } : undefined,
+  );
   res.json({
     success: true,
-    data: { key, uploadUrl, publicUrl: publicUrl(key), expiresIn: 600 },
+    data: {
+      key,
+      uploadUrl,
+      publicUrl: publicUrl(key),
+      expiresIn: 600,
+      headers: sha256 ? { "x-amz-meta-sha256": sha256 } : {},
+    },
   });
 });
 
@@ -78,6 +89,10 @@ router.post("/complete", authMiddleware, async (req, res) => {
       .status(400)
       .json({ error: "文件大小不符合要求", code: "VALIDATION_ERROR" });
   }
+  const sha256 =
+    kind === "app"
+      ? assertObjectIntegrity(object, req.body.sha256, true)
+      : null;
 
   const url = publicUrl(key);
   if (kind === "avatar")
@@ -89,6 +104,7 @@ router.post("/complete", authMiddleware, async (req, res) => {
       url,
       size: object.ContentLength,
       contentType: object.ContentType,
+      sha256,
     },
   });
 });

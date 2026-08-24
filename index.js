@@ -1,133 +1,11 @@
 const express = require("express");
 const cors = require("cors");
 const compression = require("compression");
-const { DataTypes, Op } = require("sequelize");
 require("dotenv").config();
 const sequelize = require("./config/database");
-const MarketApp = require("./models/marketApp");
-const MarketAppVersion = require("./models/marketAppVersion");
-const MarketAppVersionReview = require("./models/marketAppVersionReview");
-const AppComment = require("./models/appComment");
-const UserWorkspace = require("./models/userWorkspace");
-const WorkspaceTemplate = require("./models/workspaceTemplate");
-const UserSession = require("./models/userSession");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-async function ensureMarketColumns() {
-  const queryInterface = sequelize.getQueryInterface();
-  const columns = await queryInterface.describeTable("market_apps");
-  if (!columns.releaseNotes) {
-    await queryInterface.addColumn("market_apps", "releaseNotes", {
-      type: DataTypes.TEXT,
-      allowNull: true,
-    });
-  }
-  if (!columns.isListed) {
-    await queryInterface.addColumn("market_apps", "isListed", {
-      type: DataTypes.BOOLEAN,
-      allowNull: false,
-      defaultValue: true,
-    });
-  }
-}
-
-async function ensureMarketVersions() {
-  await MarketAppVersion.sync();
-  const queryInterface = sequelize.getQueryInterface();
-  const versionColumns = await queryInterface.describeTable("market_app_versions");
-  if (!versionColumns.allowNetwork) {
-    await queryInterface.addColumn("market_app_versions", "allowNetwork", {
-      type: DataTypes.TEXT,
-      allowNull: true,
-    });
-  }
-  if (!versionColumns.metadata) {
-    await queryInterface.addColumn("market_app_versions", "metadata", {
-      type: DataTypes.TEXT("long"),
-      allowNull: true,
-    });
-  }
-  if (!versionColumns.reviewStatus) {
-    await queryInterface.addColumn("market_app_versions", "reviewStatus", {
-      type: DataTypes.ENUM("pending", "approved", "rejected", "withdrawn"),
-      allowNull: false,
-      defaultValue: "approved",
-    });
-  }
-  if (!versionColumns.reviewCategory) {
-    await queryInterface.addColumn("market_app_versions", "reviewCategory", {
-      type: DataTypes.STRING(50),
-      allowNull: true,
-    });
-  }
-  if (!versionColumns.reviewNote) {
-    await queryInterface.addColumn("market_app_versions", "reviewNote", {
-      type: DataTypes.TEXT,
-      allowNull: true,
-    });
-  }
-  if (!versionColumns.reviewedBy) {
-    await queryInterface.addColumn("market_app_versions", "reviewedBy", {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-    });
-  }
-  if (!versionColumns.reviewedAt) {
-    await queryInterface.addColumn("market_app_versions", "reviewedAt", {
-      type: DataTypes.DATE,
-      allowNull: true,
-    });
-  }
-  if (!versionColumns.submissionCount) {
-    await queryInterface.addColumn("market_app_versions", "submissionCount", {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      defaultValue: 1,
-    });
-  }
-  await MarketAppVersionReview.sync();
-  const apps = await MarketApp.findAll({ where: { fileKey: { [Op.ne]: null } } });
-  for (const app of apps) {
-    const [version] = await MarketAppVersion.findOrCreate({
-      where: { appId: app.id, version: app.version },
-      defaults: {
-        appId: app.id,
-        version: app.version,
-        fileKey: app.fileKey,
-        fileUrl: app.fileUrl || `${process.env.R2_PUBLIC_URL || "https://files.020201.xyz"}/${app.fileKey}`,
-        size: app.size,
-        releaseNotes: app.releaseNotes || "",
-        allowNetwork: app.allowNetwork || "[]",
-        metadata: {
-          name: app.name,
-          icon: app.icon,
-          description: app.description || "",
-          category: app.category || "",
-          readme: app.readme || "",
-          screenshots: app.screenshots || null,
-        },
-        publishedBy: app.uploadedBy,
-        status: "active",
-        reviewStatus: "approved",
-      },
-    });
-    if (!version.metadata || Object.keys(version.metadata).length === 0) {
-      await version.update({
-        metadata: {
-          name: app.name,
-          icon: app.icon,
-          description: app.description || "",
-          category: app.category || "",
-          readme: app.readme || "",
-          screenshots: app.screenshots || null,
-        },
-        reviewStatus: version.reviewStatus || "approved",
-      });
-    }
-  }
-}
 
 // CORS 必须先于数据库初始化门禁注册。前端的 X-Client-Geo 会触发 OPTIONS 预检，
 // 即使冷启动迁移失败或超时，也应先返回正确跨域头，让浏览器展示真实服务端错误。
@@ -193,6 +71,9 @@ app.use("/api/market", marketRouter);
 const commentsRouter = require("./routes/comments");
 app.use("/api/market", commentsRouter);
 
+const reportsRouter = require("./routes/reports");
+app.use("/api/market", reportsRouter);
+
 // 用户管理路由
 const usersRouter = require("./routes/users");
 app.use("/api/users", usersRouter);
@@ -226,14 +107,6 @@ app.use("/api/research-stocks", stockResearchRouter);
 if (!process.env.VERCEL) {
   sequelize
     .sync()
-    .then(() =>
-      ensureMarketColumns().catch((err) =>
-        console.warn("MarketApp 增量列同步跳过:", err.message),
-      ),
-    )
-    .then(() => ensureMarketVersions())
-    .then(() => WorkspaceTemplate.sync())
-    .then(() => UserSession.sync())
     .then(() => {
       app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);

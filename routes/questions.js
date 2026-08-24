@@ -173,21 +173,4 @@ router.delete("/:id", authMiddleware, adminOnly, async (req, res) => {
   res.json({ message: "删除成功" });
 });
 
-// 批量导入题目
-router.post("/import", authMiddleware, adminOnly, async (req, res) => {
-  const { questions } = req.body;
-  if (
-    !Array.isArray(questions) ||
-    questions.length === 0 ||
-    questions.length > 500
-  ) {
-    return res.status(400).json({ error: "请提供有效的题目数组" });
-  }
-  const created = await Question.bulkCreate(questions);
-  res.status(201).json({
-    message: `成功导入 ${created.length} 道题目`,
-    count: created.length,
-  });
-});
-
 module.exports = router;

@@ -85,6 +85,10 @@ const MarketApp = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    sha256: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+    },
   },
   {
     tableName: "market_apps",

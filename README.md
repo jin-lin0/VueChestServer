@@ -35,19 +35,19 @@ pnpm install
 
 复制 `.env` 文件（已有默认值，部署时按需修改）：
 
-| 变量            | 说明         | 示例                 |
-| --------------- | ------------ | -------------------- |
-| `DB_HOST`     | 数据库地址   | `mysql.sqlpub.com` |
-| `DB_PORT`     | 数据库端口   | `3306`             |
-| `DB_NAME`     | 数据库名     | `aichatmsg`        |
-| `DB_USER`     | 数据库用户   | `logyes`           |
-| `DB_PASSWORD` | 数据库密码   |                      |
-| `JWT_SECRET`  | JWT 签名密钥 |                      |
-| `R2_ACCOUNT_ID` | Cloudflare Account ID |                      |
-| `R2_ACCESS_KEY_ID` | R2 API Token Access Key |                      |
-| `R2_SECRET_ACCESS_KEY` | R2 API Token Secret |                      |
-| `R2_BUCKET_NAME` | R2 存储桶名称 | `vuechest` |
-| `R2_PUBLIC_URL` | R2 自定义域 | `https://files.020201.xyz` |
+| 变量                   | 说明                    | 示例                       |
+| ---------------------- | ----------------------- | -------------------------- |
+| `DB_HOST`              | 数据库地址              | `mysql.sqlpub.com`         |
+| `DB_PORT`              | 数据库端口              | `3306`                     |
+| `DB_NAME`              | 数据库名                | `aichatmsg`                |
+| `DB_USER`              | 数据库用户              | `logyes`                   |
+| `DB_PASSWORD`          | 数据库密码              |                            |
+| `JWT_SECRET`           | JWT 签名密钥            |                            |
+| `R2_ACCOUNT_ID`        | Cloudflare Account ID   |                            |
+| `R2_ACCESS_KEY_ID`     | R2 API Token Access Key |                            |
+| `R2_SECRET_ACCESS_KEY` | R2 API Token Secret     |                            |
+| `R2_BUCKET_NAME`       | R2 存储桶名称           | `vuechest`                 |
+| `R2_PUBLIC_URL`        | R2 自定义域             | `https://files.020201.xyz` |
 
 ### 3. 启动服务
 
@@ -65,26 +65,20 @@ pnpm start
 
 ### R2 文件存储
 
-头像和应用包通过预签名 URL 直传 Cloudflare R2，数据库只保存对象 Key 和 URL。配置好环境变量后，首次升级运行：
-
-```bash
-pnpm run migrate:r2
-```
-
-R2 桶需要允许 `https://app.020201.xyz` 的 `PUT`、`GET`、`HEAD` 请求，并允许 `Content-Type` 请求头。预签名上传地址使用 S3 Endpoint，文件读取使用 `https://files.020201.xyz`。
+头像和应用包通过预签名 URL 直传 Cloudflare R2，数据库只保存对象 Key 和 URL。R2 桶需要允许 `https://app.020201.xyz` 的 `PUT`、`GET`、`HEAD` 请求，并允许 `Content-Type` 与 `x-amz-meta-sha256` 请求头。应用包直传时会把 SHA-256 写入对象元数据；创建版本和浏览器安装都会核对该值。预签名上传地址使用 S3 Endpoint，文件读取使用 `https://files.020201.xyz`。
 
 ## API 端点
 
-| 前缀               | 路由文件                | 说明                           |
-| ------------------ | ----------------------- | ------------------------------ |
-| `/api/auth`      | `routes/auth.js`      | 登录、注册、用户信息、应用同步 |
-| `/api/users`     | `routes/users.js`     | 用户管理（仅 super_admin）     |
-| `/api/market`    | `routes/market.js`    | 应用市场 CRUD                  |
-| `/api/questions` | `routes/questions.js` | 面试题库                       |
-| `/api/messages`  | `routes/messages.js`  | 消息/AI 聊天                   |
-| `/api/netease`   | `routes/netease.js`   | 网易云音乐 API                 |
-| `/api/research-stocks` | `routes/stockResearch.js` | A 股大盘、估值、财务与公司公告 |
-| `/health`        | index.js                | 健康检查                       |
+| 前缀                   | 路由文件                                                      | 说明                                     |
+| ---------------------- | ------------------------------------------------------------- | ---------------------------------------- |
+| `/api/auth`            | `routes/auth.js`                                              | 登录、注册、用户信息、应用同步           |
+| `/api/users`           | `routes/users.js`                                             | 用户管理（仅 super_admin）               |
+| `/api/market`          | `routes/market.js`、`routes/comments.js`、`routes/reports.js` | 应用市场、评论评分、举报审核与版本完整性 |
+| `/api/questions`       | `routes/questions.js`                                         | 面试题库                                 |
+| `/api/messages`        | `routes/messages.js`                                          | 消息/AI 聊天                             |
+| `/api/netease`         | `routes/netease.js`                                           | 网易云音乐 API                           |
+| `/api/research-stocks` | `routes/stockResearch.js`                                     | A 股大盘、估值、财务与公司公告           |
+| `/health`              | index.js                                                      | 健康检查                                 |
 
 ## 部署到 Vercel
 
@@ -100,15 +94,13 @@ R2 桶需要允许 `https://app.020201.xyz` 的 `PUT`、`GET`、`HEAD` 请求，
 
 Vercel 每次冷启动时会 **跳过** `sequelize.sync()`，以加速冷启动（约节省 3-5 秒）。
 
-如果修改了模型（增删改字段），需要在**本地**先启动一次服务：
+内测阶段以 Sequelize 模型为数据库结构真源。新环境使用空数据库在本地启动一次服务，由 `sequelize.sync()` 创建完整表结构：
 
 ```bash
 pnpm start
 ```
 
-本地启动时会自动执行 `sync()`，将表结构变更同步到云端数据库。确认成功后，再部署到 Vercel。
-
-> 如果忘了同步就直接部署，线上 API 会报字段不存在的错误。
+现阶段模型发生不兼容变更时直接重建内测数据库，不维护旧结构兼容代码。正式上线前再引入版本化迁移体系。
 
 ### 3. 冷启动
 
