@@ -1,5 +1,5 @@
 const OPENROUTER_MODELS_URL =
-  "https://openrouter.ai/api/v1/models?output_modalities=text&sort=most-popular";
+  "https://openrouter.ai/api/v1/models?output_modalities=text&sort=intelligence-high-to-low";
 const OPENROUTER_CACHE_TTL_MS = 15 * 60 * 1000;
 const OPENROUTER_STALE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -76,6 +76,10 @@ function normalizeOpenRouterFreeModels(rows) {
       contextLength: Number.isFinite(Number(row.context_length))
         ? Number(row.context_length)
         : null,
+      expirationDate:
+        typeof row.expiration_date === "string" && row.expiration_date
+          ? row.expiration_date
+          : null,
     });
   }
   return models;
@@ -173,6 +177,7 @@ async function getConfiguredProviders() {
 function buildUpstreamRequest({
   providerId,
   model,
+  fallbackModels = [],
   messages,
   maxTokens,
   temperature,
@@ -181,6 +186,11 @@ function buildUpstreamRequest({
   const meta = getProviderMeta(providerId);
   if (!meta) throw new Error(`未知平台: ${providerId}`);
 
+  const modelRouting =
+    providerId === "openrouter" && fallbackModels.length > 0
+      ? { models: [model, ...fallbackModels] }
+      : { model };
+
   return {
     url: meta.baseUrl,
     headers: {
@@ -188,7 +198,7 @@ function buildUpstreamRequest({
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model,
+      ...modelRouting,
       messages,
       stream: true,
       max_tokens: maxTokens,
@@ -214,6 +224,7 @@ module.exports = {
   getProviderModels,
   isModelAllowed,
   normalizeOpenRouterFreeModels,
+  OPENROUTER_MODELS_URL,
   resetOpenRouterModelCache,
   buildUpstreamRequest,
   parseUpstreamDelta,

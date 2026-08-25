@@ -7,8 +7,8 @@ const { authMiddleware } = require("../middleware/auth");
 const {
   getConfiguredProviders,
   getProviderMeta,
+  getProviderModels,
   getApiKey,
-  isModelAllowed,
   buildUpstreamRequest,
   parseUpstreamDelta,
 } = require("../config/aiProviders");
@@ -103,9 +103,9 @@ router.post("/chat", authMiddleware, async (req, res) => {
   }
 
   // 动态白名单校验：OpenRouter 只允许当前模型目录里的具体 :free 模型。
-  let modelAllowed = false;
+  let providerModels = [];
   try {
-    modelAllowed = await isModelAllowed(provider, model);
+    providerModels = await getProviderModels(provider);
   } catch (error) {
     return res.status(503).json({
       success: false,
@@ -113,7 +113,7 @@ router.post("/chat", authMiddleware, async (req, res) => {
       code: "MODEL_LIST_UNAVAILABLE",
     });
   }
-  if (!modelAllowed) {
+  if (!providerModels.some((item) => item.id === model)) {
     return res.status(400).json({
       success: false,
       error: `模型 ${model} 不属于平台 ${meta.name} 支持列表`,
@@ -141,10 +141,19 @@ router.post("/chat", authMiddleware, async (req, res) => {
   }
 
   let upstream;
+  const fallbackModels =
+    provider === "openrouter"
+      ? providerModels
+          .map((item) => item.id)
+          .filter((id) => id !== model)
+          // OpenRouter 的 models 路由数组最多 3 项：主模型 + 2 个备用。
+          .slice(0, 2)
+      : [];
   try {
     const { url, headers, body } = buildUpstreamRequest({
       providerId: provider,
       model,
+      fallbackModels,
       messages,
       maxTokens: DEFAULT_MAX_TOKENS,
       temperature: DEFAULT_TEMPERATURE,
@@ -182,17 +191,20 @@ router.post("/chat", authMiddleware, async (req, res) => {
   const decoder = new TextDecoder();
   let buffer = "";
   let fullAssistant = "";
+  let resolvedModel = model;
+  let announcedModel = "";
   let clientGone = false;
 
-  const writeChunk = (delta) => {
+  const writePayload = (payload) => {
     try {
-      res.write(
-        `data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`,
-      );
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
     } catch {
       clientGone = true;
     }
   };
+
+  const writeChunk = (delta) =>
+    writePayload({ choices: [{ delta: { content: delta } }] });
 
   try {
     while (!clientGone) {
@@ -211,6 +223,12 @@ router.post("/chat", authMiddleware, async (req, res) => {
 
         try {
           const json = JSON.parse(data);
+          const actualModel = typeof json?.model === "string" ? json.model : "";
+          if (actualModel && actualModel !== announcedModel) {
+            resolvedModel = actualModel;
+            announcedModel = actualModel;
+            writePayload({ model: actualModel });
+          }
           const delta = parseUpstreamDelta(json);
           if (delta) {
             fullAssistant += delta;
@@ -230,7 +248,14 @@ router.post("/chat", authMiddleware, async (req, res) => {
 
   // 落库（无论客户端是否中途断开，都尽量保存这一轮）
   try {
-    await persistTurn(userId, conversationId, provider, model, messages, fullAssistant);
+    await persistTurn(
+      userId,
+      conversationId,
+      provider,
+      resolvedModel,
+      messages,
+      fullAssistant,
+    );
   } catch (e) {
     console.error("AI 对话落库失败:", e.message);
   }
