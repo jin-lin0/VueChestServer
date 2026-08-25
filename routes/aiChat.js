@@ -16,8 +16,9 @@ const {
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_TEMPERATURE = 0.7;
 
-router.get("/providers", (req, res) => {
-  res.json({ success: true, data: getConfiguredProviders() });
+router.get("/providers", async (req, res) => {
+  const providers = await getConfiguredProviders();
+  res.json({ success: true, data: providers });
 });
 
 /**
@@ -44,10 +45,11 @@ async function persistTurn(
   if (conv.title === "新对话") {
     const raw = lastUser.content || "";
     conv.title = raw.slice(0, 20) + (raw.length > 20 ? "..." : "");
-    conv.provider = provider;
-    conv.model = model;
-    await conv.save();
   }
+  conv.provider = provider;
+  conv.model = model;
+  // 每轮都刷新会话更新时间，服务端列表才能按最近对话正确排序。
+  await conv.save();
 
   await AIChatMessage.create({
     conversationId,
@@ -100,8 +102,18 @@ router.post("/chat", authMiddleware, async (req, res) => {
     });
   }
 
-  // model 白名单校验：只允许使用平台声明的模型，防止指定任意/高价模型
-  if (!isModelAllowed(provider, model)) {
+  // 动态白名单校验：OpenRouter 只允许当前模型目录里的具体 :free 模型。
+  let modelAllowed = false;
+  try {
+    modelAllowed = await isModelAllowed(provider, model);
+  } catch (error) {
+    return res.status(503).json({
+      success: false,
+      error: `模型列表暂时不可用: ${error.message}`,
+      code: "MODEL_LIST_UNAVAILABLE",
+    });
+  }
+  if (!modelAllowed) {
     return res.status(400).json({
       success: false,
       error: `模型 ${model} 不属于平台 ${meta.name} 支持列表`,
@@ -224,6 +236,28 @@ router.post("/chat", authMiddleware, async (req, res) => {
   }
 });
 
+// 会话列表以服务端为准，登录后可跨浏览器和设备恢复。
+router.get("/conversations", authMiddleware, async (req, res) => {
+  const rows = await AIChatConversation.findAll({
+    where: { userId: req.user.id },
+    attributes: ["id", "title", "provider", "model", "createdAt", "updatedAt"],
+    order: [["updatedAt", "DESC"]],
+    limit: 100,
+  });
+
+  res.json({
+    success: true,
+    data: rows.map((row) => ({
+      id: row.id,
+      title: row.title || "新对话",
+      provider: row.provider || null,
+      model: row.model || null,
+      createdAt: row.createdAt ? new Date(row.createdAt).getTime() : Date.now(),
+      updatedAt: row.updatedAt ? new Date(row.updatedAt).getTime() : Date.now(),
+    })),
+  });
+});
+
 router.get("/conversations/:id/messages", authMiddleware, async (req, res) => {
   const conv = await AIChatConversation.findByPk(req.params.id);
   if (!conv || conv.userId !== req.user.id) {
@@ -253,6 +287,33 @@ router.get("/conversations/:id/messages", authMiddleware, async (req, res) => {
       title: conv?.title || "新对话",
     },
   });
+});
+
+router.delete("/conversations/:id", authMiddleware, async (req, res) => {
+  const conversation = await AIChatConversation.findOne({
+    where: { id: req.params.id, userId: req.user.id },
+    attributes: ["id"],
+  });
+  if (!conversation) {
+    return res.status(404).json({
+      success: false,
+      error: "会话不存在",
+      code: "NOT_FOUND",
+    });
+  }
+
+  await AIChatConversation.sequelize.transaction(async (transaction) => {
+    await AIChatMessage.destroy({
+      where: { conversationId: conversation.id },
+      transaction,
+    });
+    await AIChatConversation.destroy({
+      where: { id: conversation.id, userId: req.user.id },
+      transaction,
+    });
+  });
+
+  res.json({ success: true, data: { id: conversation.id } });
 });
 
 module.exports = router;
