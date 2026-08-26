@@ -6,12 +6,12 @@ const AIChatMessage = require("../models/aiChatMessage");
 const { authMiddleware } = require("../middleware/auth");
 const {
   getConfiguredProviders,
-  getProviderMeta,
-  getProviderModels,
-  getApiKey,
-  buildUpstreamRequest,
   parseUpstreamDelta,
 } = require("../config/aiProviders");
+const {
+  createAIUpstreamRequest,
+  recordModelResolution,
+} = require("../services/aiService");
 
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_TEMPERATURE = 0.7;
@@ -32,39 +32,73 @@ async function persistTurn(
   model,
   messages,
   assistantContent,
+  options = {},
 ) {
   const userMessages = messages.filter((m) => m.role === "user");
   const lastUser = userMessages[userMessages.length - 1];
   if (!lastUser) return;
 
-  const [conv] = await AIChatConversation.findOrCreate({
-    where: { id: conversationId },
-    defaults: { title: "新对话", provider, model, userId },
-  });
-
-  if (conv.title === "新对话") {
-    const raw = lastUser.content || "";
-    conv.title = raw.slice(0, 20) + (raw.length > 20 ? "..." : "");
-  }
-  conv.provider = provider;
-  conv.model = model;
-  // 每轮都刷新会话更新时间，服务端列表才能按最近对话正确排序。
-  await conv.save();
-
-  await AIChatMessage.create({
-    conversationId,
-    role: "user",
-    content: lastUser.content,
-    model,
-  });
-  if (assistantContent) {
-    await AIChatMessage.create({
-      conversationId,
-      role: "assistant",
-      content: assistantContent,
-      model,
+  return AIChatConversation.sequelize.transaction(async (transaction) => {
+    const [conv] = await AIChatConversation.findOrCreate({
+      where: { id: conversationId },
+      defaults: { title: "新对话", provider, model, userId },
+      transaction,
     });
-  }
+    if (conv.userId != null && conv.userId !== userId) {
+      const error = new Error("无权修改该会话");
+      error.code = "FORBIDDEN";
+      throw error;
+    }
+
+    if (options.replaceFromMessageId) {
+      await AIChatMessage.destroy({
+        where: {
+          conversationId,
+          id: { [Op.gte]: options.replaceFromMessageId },
+        },
+        transaction,
+      });
+    }
+
+    if (conv.title === "新对话" || options.updateTitle) {
+      const raw = lastUser.content || "";
+      conv.title = raw.slice(0, 20) + (raw.length > 20 ? "..." : "");
+    }
+    conv.provider = provider;
+    conv.model = model;
+    // 每轮都刷新会话更新时间，服务端列表才能按最近对话正确排序。
+    await conv.save({ transaction });
+
+    let userRow = null;
+    if (options.persistUser !== false) {
+      userRow = await AIChatMessage.create(
+        {
+          conversationId,
+          role: "user",
+          content: lastUser.content,
+          model,
+        },
+        { transaction },
+      );
+    }
+    const assistantRow = assistantContent
+      ? await AIChatMessage.create(
+          {
+            conversationId,
+            role: "assistant",
+            content: assistantContent,
+            model,
+          },
+          { transaction },
+        )
+      : null;
+
+    return {
+      userMessageId: userRow?.id || null,
+      assistantMessageId: assistantRow?.id || null,
+      title: conv.title,
+    };
+  });
 }
 
 router.post("/chat", authMiddleware, async (req, res) => {
@@ -72,6 +106,12 @@ router.post("/chat", authMiddleware, async (req, res) => {
   const rawId = req.body?.conversationId;
   const conversationId = rawId != null ? String(rawId) : "";
   const { provider, model, messages } = req.body || {};
+  const mode = ["normal", "edit", "regenerate"].includes(req.body?.mode)
+    ? req.body.mode
+    : "normal";
+  const replaceFromMessageId = Number(req.body?.replaceFromMessageId);
+  const requestedMaxTokens = Number(req.body?.maxTokens);
+  const requestedTemperature = Number(req.body?.temperature);
 
   if (!conversationId) {
     return res.status(400).json({
@@ -93,34 +133,6 @@ router.post("/chat", authMiddleware, async (req, res) => {
       .json({ success: false, error: "messages 不能为空", code: "VALIDATION" });
   }
 
-  const meta = getProviderMeta(provider);
-  if (!meta) {
-    return res.status(400).json({
-      success: false,
-      error: `未知平台: ${provider}`,
-      code: "VALIDATION",
-    });
-  }
-
-  // 动态白名单校验：OpenRouter 只允许当前模型目录里的具体 :free 模型。
-  let providerModels = [];
-  try {
-    providerModels = await getProviderModels(provider);
-  } catch (error) {
-    return res.status(503).json({
-      success: false,
-      error: `模型列表暂时不可用: ${error.message}`,
-      code: "MODEL_LIST_UNAVAILABLE",
-    });
-  }
-  if (!providerModels.some((item) => item.id === model)) {
-    return res.status(400).json({
-      success: false,
-      error: `模型 ${model} 不属于平台 ${meta.name} 支持列表`,
-      code: "MODEL_NOT_ALLOWED",
-    });
-  }
-
   // 会话归属校验：若会话已存在，必须是当前用户自己的
   const existing = await AIChatConversation.findByPk(conversationId);
   if (existing && existing.userId != null && existing.userId !== userId) {
@@ -131,60 +143,75 @@ router.post("/chat", authMiddleware, async (req, res) => {
     });
   }
 
-  const apiKey = getApiKey(provider);
-  if (!apiKey) {
-    return res.status(400).json({
-      success: false,
-      error: `平台 ${meta.name} 未配置 API Key`,
-      code: "NO_KEY",
+  let replacementUpdatesTitle = false;
+  if (mode !== "normal") {
+    if (
+      !existing ||
+      !Number.isInteger(replaceFromMessageId) ||
+      replaceFromMessageId <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "编辑或重新生成需要有效的原消息",
+        code: "INVALID_REPLACEMENT",
+      });
+    }
+    const replacementTarget = await AIChatMessage.findOne({
+      where: { id: replaceFromMessageId, conversationId },
+      attributes: ["id", "role"],
     });
+    const expectedRole = mode === "edit" ? "user" : "assistant";
+    if (!replacementTarget || replacementTarget.role !== expectedRole) {
+      return res.status(400).json({
+        success: false,
+        error:
+          mode === "edit" ? "找不到要编辑的用户消息" : "找不到要重新生成的回答",
+        code: "INVALID_REPLACEMENT",
+      });
+    }
+    if (mode === "edit") {
+      const firstUserMessage = await AIChatMessage.findOne({
+        where: { conversationId, role: "user" },
+        attributes: ["id"],
+        order: [["id", "ASC"]],
+      });
+      replacementUpdatesTitle = firstUserMessage?.id === replaceFromMessageId;
+    }
   }
 
   let upstream;
-  const fallbackModels =
-    provider === "openrouter"
-      ? providerModels
-          .map((item) => item.id)
-          .filter((id) => id !== model)
-          // OpenRouter 的 models 路由数组最多 3 项：主模型 + 2 个备用。
-          .slice(0, 2)
-      : [];
+  const upstreamController = new AbortController();
+  req.once("aborted", () => upstreamController.abort());
+  res.once("close", () => {
+    if (!res.writableEnded) upstreamController.abort();
+  });
   try {
-    const { url, headers, body } = buildUpstreamRequest({
+    const result = await createAIUpstreamRequest({
       providerId: provider,
       model,
-      fallbackModels,
       messages,
-      maxTokens: DEFAULT_MAX_TOKENS,
-      temperature: DEFAULT_TEMPERATURE,
-      apiKey,
+      maxTokens: Number.isFinite(requestedMaxTokens)
+        ? Math.min(8192, Math.max(64, requestedMaxTokens))
+        : DEFAULT_MAX_TOKENS,
+      temperature: Number.isFinite(requestedTemperature)
+        ? Math.min(2, Math.max(0, requestedTemperature))
+        : DEFAULT_TEMPERATURE,
+      signal: upstreamController.signal,
     });
-    upstream = await fetch(url, { method: "POST", headers, body });
+    upstream = result.response;
   } catch (e) {
-    return res.status(502).json({
+    return res.status(e.status || 502).json({
       success: false,
-      error: `上游请求失败: ${e.message}`,
-      code: "UPSTREAM_ERROR",
+      error: e.message || "AI 请求失败",
+      code: e.code || "UPSTREAM_ERROR",
     });
-  }
-
-  // 上游非 2xx：在设置 SSE 头之前返回 JSON 错误，前端可正常解析
-  if (!upstream.ok) {
-    const text = await upstream.text().catch(() => "");
-    let msg = `上游返回 ${upstream.status}`;
-    try {
-      const j = JSON.parse(text);
-      msg = j?.error?.message || j?.error || msg;
-    } catch {}
-    return res
-      .status(upstream.status)
-      .json({ success: false, error: msg, code: "UPSTREAM_ERROR" });
   }
 
   // 设置 SSE 头，开始流式回传
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   if (typeof res.flushHeaders === "function") res.flushHeaders();
 
   const reader = upstream.body.getReader();
@@ -198,6 +225,7 @@ router.post("/chat", authMiddleware, async (req, res) => {
   const writePayload = (payload) => {
     try {
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      if (typeof res.flush === "function") res.flush();
     } catch {
       clientGone = true;
     }
@@ -206,6 +234,7 @@ router.post("/chat", authMiddleware, async (req, res) => {
   const writeChunk = (delta) =>
     writePayload({ choices: [{ delta: { content: delta } }] });
 
+  let streamFailure = null;
   try {
     while (!clientGone) {
       const { done, value } = await reader.read();
@@ -237,37 +266,80 @@ router.post("/chat", authMiddleware, async (req, res) => {
         } catch {}
       }
     }
-  } catch {
-    // 上游流异常，尽力返回已累积内容
+  } catch (error) {
+    streamFailure = error;
   } finally {
     try {
-      res.write("data: [DONE]\n\n");
-      res.end();
+      await reader.cancel();
     } catch {}
   }
 
-  // 落库（无论客户端是否中途断开，都尽量保存这一轮）
+  if (streamFailure && !clientGone) {
+    writePayload({
+      error: streamFailure?.message || "AI 响应流中断",
+      code: streamFailure?.code || "STREAM_INTERRUPTED",
+    });
+  }
+
+  let persisted = null;
   try {
-    await persistTurn(
-      userId,
-      conversationId,
-      provider,
-      resolvedModel,
-      messages,
-      fullAssistant,
-    );
+    if (fullAssistant) {
+      recordModelResolution(model, resolvedModel);
+      persisted = await persistTurn(
+        userId,
+        conversationId,
+        provider,
+        resolvedModel,
+        messages,
+        fullAssistant,
+        {
+          replaceFromMessageId: mode === "normal" ? null : replaceFromMessageId,
+          persistUser: mode !== "regenerate",
+          updateTitle: replacementUpdatesTitle,
+        },
+      );
+      if (!clientGone) writePayload({ persisted });
+    } else if (!clientGone) {
+      writePayload({ error: "模型没有返回内容", code: "EMPTY_RESPONSE" });
+    }
   } catch (e) {
     console.error("AI 对话落库失败:", e.message);
+    if (!clientGone) {
+      writePayload({
+        error: "回答已生成，但保存会话失败",
+        code: "PERSISTENCE_FAILED",
+      });
+    }
+  }
+
+  if (!clientGone) {
+    try {
+      res.write("data: [DONE]\n\n");
+      if (typeof res.flush === "function") res.flush();
+      res.end();
+    } catch {}
   }
 });
 
 // 会话列表以服务端为准，登录后可跨浏览器和设备恢复。
 router.get("/conversations", authMiddleware, async (req, res) => {
-  const rows = await AIChatConversation.findAll({
-    where: { userId: req.user.id },
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(
+    100,
+    Math.max(10, Number.parseInt(req.query.limit, 10) || 50),
+  );
+  const query = String(req.query.q || "")
+    .trim()
+    .slice(0, 60);
+  const where = { userId: req.user.id };
+  if (query) where.title = { [Op.like]: `%${query}%` };
+
+  const { rows, count } = await AIChatConversation.findAndCountAll({
+    where,
     attributes: ["id", "title", "provider", "model", "createdAt", "updatedAt"],
     order: [["updatedAt", "DESC"]],
-    limit: 100,
+    limit,
+    offset: (page - 1) * limit,
   });
 
   res.json({
@@ -280,7 +352,38 @@ router.get("/conversations", authMiddleware, async (req, res) => {
       createdAt: row.createdAt ? new Date(row.createdAt).getTime() : Date.now(),
       updatedAt: row.updatedAt ? new Date(row.updatedAt).getTime() : Date.now(),
     })),
+    pagination: {
+      page,
+      limit,
+      total: count,
+      hasMore: page * limit < count,
+    },
   });
+});
+
+router.put("/conversations/:id", authMiddleware, async (req, res) => {
+  const title = String(req.body?.title || "")
+    .trim()
+    .slice(0, 60);
+  if (!title) {
+    return res.status(400).json({
+      success: false,
+      error: "会话标题不能为空",
+      code: "VALIDATION",
+    });
+  }
+  const conversation = await AIChatConversation.findOne({
+    where: { id: req.params.id, userId: req.user.id },
+  });
+  if (!conversation) {
+    return res.status(404).json({
+      success: false,
+      error: "会话不存在",
+      code: "NOT_FOUND",
+    });
+  }
+  await conversation.update({ title });
+  res.json({ success: true, data: { id: conversation.id, title } });
 });
 
 router.get("/conversations/:id/messages", authMiddleware, async (req, res) => {

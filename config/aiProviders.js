@@ -1,5 +1,9 @@
 const OPENROUTER_MODELS_URL =
   "https://openrouter.ai/api/v1/models?output_modalities=text&sort=intelligence-high-to-low";
+const {
+  getModelHealth,
+  rankModelsByHealth,
+} = require("../utils/aiModelHealth");
 const OPENROUTER_CACHE_TTL_MS = 15 * 60 * 1000;
 const OPENROUTER_STALE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -65,14 +69,18 @@ function normalizeOpenRouterFreeModels(rows) {
     if (!id.endsWith(":free") || id === "openrouter/free" || seen.has(id)) {
       continue;
     }
-    if (!isZeroPrice(row?.pricing?.prompt) || !isZeroPrice(row?.pricing?.completion)) {
+    if (
+      !isZeroPrice(row?.pricing?.prompt) ||
+      !isZeroPrice(row?.pricing?.completion)
+    ) {
       continue;
     }
 
     seen.add(id);
     models.push({
       id,
-      name: typeof row.name === "string" && row.name.trim() ? row.name.trim() : id,
+      name:
+        typeof row.name === "string" && row.name.trim() ? row.name.trim() : id,
       contextLength: Number.isFinite(Number(row.context_length))
         ? Number(row.context_length)
         : null,
@@ -158,14 +166,29 @@ async function getConfiguredProviders() {
   for (const meta of PROVIDER_META) {
     if (!getApiKey(meta.id)) continue;
     try {
-      const models = await getProviderModels(meta.id);
-      if (models.length === 0) continue;
+      const discoveredModels = await getProviderModels(meta.id);
+      if (discoveredModels.length === 0) continue;
+      const rankedModels =
+        meta.id === "openrouter"
+          ? rankModelsByHealth(discoveredModels)
+          : discoveredModels;
+      const models = rankedModels.map((model) => {
+        const health = getModelHealth(model.id);
+        return health
+          ? {
+              ...model,
+              health: health.coolingDown ? "cooldown" : "healthy",
+              cooldownUntil: health.cooldownUntil || null,
+            }
+          : model;
+      });
       providers.push({
         id: meta.id,
         name: meta.name,
         models,
         // OpenRouter 以当前免费列表第一项为默认值，不再使用随机路由。
-        defaultModel: meta.id === "openrouter" ? models[0].id : meta.defaultModel,
+        defaultModel:
+          meta.id === "openrouter" ? models[0].id : meta.defaultModel,
       });
     } catch (error) {
       console.error(`${meta.name} 模型列表加载失败:`, error.message);
@@ -179,6 +202,7 @@ function buildUpstreamRequest({
   model,
   fallbackModels = [],
   messages,
+  stream = true,
   maxTokens,
   temperature,
   apiKey,
@@ -200,7 +224,7 @@ function buildUpstreamRequest({
     body: JSON.stringify({
       ...modelRouting,
       messages,
-      stream: true,
+      stream,
       max_tokens: maxTokens,
       temperature,
     }),

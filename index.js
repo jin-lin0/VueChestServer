@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const compression = require("compression");
+const { responseCompression } = require("./middleware/responseCompression");
 require("dotenv").config();
 const sequelize = require("./config/database");
 
@@ -16,7 +16,9 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   next();
 });
-app.use(compression());
+// SSE 必须边生成边送达；AI 对话流在 responseCompression 中显式跳过压缩，
+// 其余 JSON / 静态响应仍保留 gzip。
+app.use(responseCompression);
 app.use(express.json({ limit: "2mb" }));
 
 // 访问统计（记录所有 API 请求）

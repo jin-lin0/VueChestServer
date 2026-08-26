@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
+const { authMiddleware } = require("../middleware/auth");
+const { analyzeTranscript } = require("../services/bilibiliAnalysisService");
 
 /**
  * B站字幕提取接口
@@ -273,6 +275,42 @@ router.post("/subtitle", async (req, res) => {
     all: !!all,
   });
   res.json({ success: true, data });
+});
+
+// AI 字幕分析需要登录，复用统一模型白名单、限流降级与错误契约。
+router.post("/analyze", authMiddleware, async (req, res) => {
+  const { title, bvid, text, provider, model, type, prompt } = req.body || {};
+  if (!bvid || !provider || !model || !text) {
+    return res.status(400).json({
+      success: false,
+      error: "缺少视频、字幕或模型信息",
+      code: "VALIDATION",
+    });
+  }
+
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  try {
+    const data = await analyzeTranscript({
+      title: String(title || bvid).slice(0, 200),
+      bvid: String(bvid).slice(0, 20),
+      text,
+      providerId: provider,
+      model,
+      type: ["overview", "translate", "custom"].includes(type)
+        ? type
+        : "overview",
+      prompt,
+      signal: controller.signal,
+    });
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(error.status || 502).json({
+      success: false,
+      error: error.message || "字幕分析失败",
+      code: error.code || "AI_ANALYSIS_FAILED",
+    });
+  }
 });
 
 module.exports = router;

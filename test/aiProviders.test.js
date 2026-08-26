@@ -74,7 +74,11 @@ test("builds an ordered OpenRouter fallback request after route-level validation
 
   assert.equal(request.url, "https://openrouter.ai/api/v1/chat/completions");
   assert.deepEqual(JSON.parse(request.body), {
-    models: ["vendor/model:free", "vendor/backup-1:free", "vendor/backup-2:free"],
+    models: [
+      "vendor/model:free",
+      "vendor/backup-1:free",
+      "vendor/backup-2:free",
+    ],
     messages: [{ role: "user", content: "hello" }],
     stream: true,
     max_tokens: 1024,
