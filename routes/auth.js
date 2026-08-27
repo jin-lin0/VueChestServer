@@ -17,6 +17,11 @@ const {
   normalizeInstalledAppIds,
   selectExistingAppIds,
 } = require("../utils/installedApps");
+const {
+  splitCloudEnvelope,
+  createCloudEnvelope,
+  sanitizeSelectiveSyncConfig,
+} = require("../utils/cloudSync");
 
 const router = express.Router();
 
@@ -633,14 +638,18 @@ router.get("/workspace", authMiddleware, async (req, res) => {
   const workspace = await UserWorkspace.findOne({
     where: { userId: req.user.id },
   });
+  const config = workspace
+    ? splitCloudEnvelope(workspace.config).workspace
+    : null;
   res.json({
     success: true,
-    data: workspace
-      ? {
-          config: workspace.config,
-          updatedAt: workspace.updatedAt.toISOString(),
-        }
-      : null,
+    data:
+      workspace && config
+        ? {
+            config,
+            updatedAt: workspace.updatedAt.toISOString(),
+          }
+        : null,
   });
 });
 
@@ -649,24 +658,105 @@ router.put("/workspace", authMiddleware, async (req, res) => {
   let workspace = await UserWorkspace.findOne({
     where: { userId: req.user.id },
   });
+  const previous = splitCloudEnvelope(workspace?.config);
+  const envelope = createCloudEnvelope(config, previous.selectiveSync);
 
   if (workspace) {
-    await workspace.update({ config });
+    await workspace.update({ config: envelope });
   } else {
-    workspace = await UserWorkspace.create({ userId: req.user.id, config });
+    workspace = await UserWorkspace.create({
+      userId: req.user.id,
+      config: envelope,
+    });
   }
 
   res.json({
     success: true,
     data: {
-      config: workspace.config,
+      config,
       updatedAt: workspace.updatedAt.toISOString(),
     },
   });
 });
 
 router.delete("/workspace", authMiddleware, async (req, res) => {
-  await UserWorkspace.destroy({ where: { userId: req.user.id } });
+  const workspace = await UserWorkspace.findOne({
+    where: { userId: req.user.id },
+  });
+  if (workspace) {
+    const previous = splitCloudEnvelope(workspace.config);
+    if (previous.selectiveSync) {
+      await workspace.update({
+        config: createCloudEnvelope(null, previous.selectiveSync),
+      });
+    } else {
+      await workspace.destroy();
+    }
+  }
+  res.json({ success: true });
+});
+
+// ─── 选择性云同步 ───────────────────────────
+
+router.get("/sync", authMiddleware, async (req, res) => {
+  const workspace = await UserWorkspace.findOne({
+    where: { userId: req.user.id },
+  });
+  const config = workspace
+    ? splitCloudEnvelope(workspace.config).selectiveSync
+    : null;
+  res.json({
+    success: true,
+    data:
+      workspace && config
+        ? {
+            config,
+            updatedAt: workspace.updatedAt.toISOString(),
+          }
+        : null,
+  });
+});
+
+router.put("/sync", authMiddleware, async (req, res) => {
+  const config = sanitizeSelectiveSyncConfig(req.body?.config);
+  let workspace = await UserWorkspace.findOne({
+    where: { userId: req.user.id },
+  });
+  const previous = splitCloudEnvelope(workspace?.config);
+  const envelope = createCloudEnvelope(previous.workspace, config);
+
+  if (workspace) {
+    await workspace.update({ config: envelope });
+  } else {
+    workspace = await UserWorkspace.create({
+      userId: req.user.id,
+      config: envelope,
+    });
+  }
+
+  res.json({
+    success: true,
+    data: {
+      config,
+      updatedAt: workspace.updatedAt.toISOString(),
+    },
+  });
+});
+
+router.delete("/sync", authMiddleware, async (req, res) => {
+  const workspace = await UserWorkspace.findOne({
+    where: { userId: req.user.id },
+  });
+  if (workspace) {
+    const previous = splitCloudEnvelope(workspace.config);
+    if (previous.workspace) {
+      await workspace.update({
+        config: createCloudEnvelope(previous.workspace, null),
+      });
+    } else {
+      await workspace.destroy();
+    }
+  }
   res.json({ success: true });
 });
 

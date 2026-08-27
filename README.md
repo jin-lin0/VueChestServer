@@ -69,16 +69,16 @@ pnpm start
 
 ## API 端点
 
-| 前缀                   | 路由文件                                                      | 说明                                     |
-| ---------------------- | ------------------------------------------------------------- | ---------------------------------------- |
-| `/api/auth`            | `routes/auth.js`                                              | 登录、注册、用户信息、应用同步           |
-| `/api/users`           | `routes/users.js`                                             | 用户管理（仅 super_admin）               |
-| `/api/market`          | `routes/market.js`、`routes/comments.js`、`routes/reports.js` | 应用市场、评论评分、举报审核与版本完整性 |
-| `/api/questions`       | `routes/questions.js`                                         | 面试题库                                 |
-| `/api/messages`        | `routes/messages.js`                                          | 消息/AI 聊天                             |
-| `/api/netease`         | `routes/netease.js`                                           | 网易云音乐 API                           |
-| `/api/research-stocks` | `routes/stockResearch.js`                                     | A 股大盘、估值、财务与公司公告           |
-| `/health`              | index.js                                                      | 健康检查                                 |
+| 前缀                   | 路由文件                                                      | 说明                                       |
+| ---------------------- | ------------------------------------------------------------- | ------------------------------------------ |
+| `/api/auth`            | `routes/auth.js`                                              | 登录、注册、用户信息、应用与选择性数据同步 |
+| `/api/users`           | `routes/users.js`                                             | 用户管理（仅 super_admin）                 |
+| `/api/market`          | `routes/market.js`、`routes/comments.js`、`routes/reports.js` | 应用市场、评论评分、举报审核与版本完整性   |
+| `/api/questions`       | `routes/questions.js`                                         | 面试题库                                   |
+| `/api/messages`        | `routes/messages.js`                                          | 消息/AI 聊天                               |
+| `/api/netease`         | `routes/netease.js`                                           | 网易云音乐 API                             |
+| `/api/research-stocks` | `routes/stockResearch.js`                                     | A 股大盘、估值、财务与公司公告             |
+| `/health`              | index.js                                                      | 健康检查                                   |
 
 ## 部署到 Vercel
 
