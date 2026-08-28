@@ -1,5 +1,4 @@
 const express = require("express");
-const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const User = require("../models/user");
 const UserWorkspace = require("../models/userWorkspace");
@@ -22,133 +21,13 @@ const {
   createCloudEnvelope,
   sanitizeSelectiveSyncConfig,
 } = require("../utils/cloudSync");
+const { createLoginSession } = require("../services/authSessionService");
+const { sanitizeWorkspaceConfig } = require("../utils/workspaceConfig");
 
 const router = express.Router();
 
 // 简单邮箱格式校验
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const APP_KEY_RE = /^(builtin|market):\d+$/;
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-function detectDevice(req) {
-  const ua = String(req.headers["user-agent"] || "未知设备").slice(0, 500);
-  let name = "浏览器设备";
-  if (/iPhone/i.test(ua)) name = "iPhone";
-  else if (/iPad/i.test(ua)) name = "iPad";
-  else if (/Android/i.test(ua)) name = "Android 设备";
-  else if (/Macintosh|Mac OS/i.test(ua)) name = "Mac";
-  else if (/Windows/i.test(ua)) name = "Windows 设备";
-  else if (/Linux/i.test(ua)) name = "Linux 设备";
-  const browser = /Edg\//.test(ua)
-    ? "Edge"
-    : /Chrome\//.test(ua)
-      ? "Chrome"
-      : /Firefox\//.test(ua)
-        ? "Firefox"
-        : /Safari\//.test(ua)
-          ? "Safari"
-          : "浏览器";
-  return {
-    deviceName: `${name} · ${browser}`,
-    userAgent: ua,
-    ip: String(req.headers["x-forwarded-for"] || req.ip || "")
-      .split(",")[0]
-      .trim()
-      .slice(0, 64),
-  };
-}
-
-async function createLoginSession(user, req) {
-  const now = new Date();
-  const session = await UserSession.create({
-    userId: user.id,
-    ...detectDevice(req),
-    lastActiveAt: now,
-    expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
-  });
-  const token = jwt.sign(
-    {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      sessionId: session.id,
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" },
-  );
-  return { token, session };
-}
-
-function sanitizeWorkspaceConfig(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    const error = new Error("工作台配置格式错误");
-    error.status = 400;
-    error.code = "VALIDATION_ERROR";
-    throw error;
-  }
-
-  const payloadSize = Buffer.byteLength(JSON.stringify(raw), "utf8");
-  if (payloadSize > 100 * 1024) {
-    const error = new Error("工作台配置不能超过 100KB");
-    error.status = 413;
-    error.code = "PAYLOAD_TOO_LARGE";
-    throw error;
-  }
-
-  if (
-    !Array.isArray(raw.workspaces) ||
-    raw.workspaces.length < 1 ||
-    raw.workspaces.length > 8
-  ) {
-    const error = new Error("工作区数量必须在 1 到 8 个之间");
-    error.status = 400;
-    error.code = "VALIDATION_ERROR";
-    throw error;
-  }
-
-  const workspaces = raw.workspaces.map((workspace, index) => {
-    if (!workspace || typeof workspace !== "object") {
-      const error = new Error(`第 ${index + 1} 个工作区格式错误`);
-      error.status = 400;
-      error.code = "VALIDATION_ERROR";
-      throw error;
-    }
-
-    const id = String(workspace.id || "").slice(0, 64);
-    const name = String(workspace.name || "")
-      .trim()
-      .slice(0, 20);
-    if (!id || !name) {
-      const error = new Error("工作区 ID 和名称不能为空");
-      error.status = 400;
-      error.code = "VALIDATION_ERROR";
-      throw error;
-    }
-
-    const items = Array.isArray(workspace.items)
-      ? workspace.items
-          .filter((item) => item && APP_KEY_RE.test(String(item.appKey || "")))
-          .slice(0, 100)
-          .map((item) => ({ appKey: String(item.appKey) }))
-      : [];
-
-    return {
-      id,
-      name,
-      icon: String(workspace.icon || "◫").slice(0, 8),
-      items,
-    };
-  });
-
-  return {
-    version: 1,
-    workspaces,
-    updatedAt: Number.isFinite(Number(raw.updatedAt))
-      ? Number(raw.updatedAt)
-      : Date.now(),
-  };
-}
-
 // 发送注册验证码
 router.post("/send-code", async (req, res) => {
   const { email } = req.body;
