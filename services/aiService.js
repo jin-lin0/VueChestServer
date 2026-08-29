@@ -3,6 +3,7 @@ const {
   getProviderMeta,
   getProviderModels,
   buildUpstreamRequest,
+  parseUpstreamDelta,
 } = require("../config/aiProviders");
 const {
   recordModelFailure,
@@ -253,6 +254,73 @@ async function completeAI(options) {
   };
 }
 
+async function consumeAIStream(response, options = {}) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new AIServiceError("无法读取 AI 响应流", "INVALID_AI_STREAM", 502);
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let model = options.requestedModel || "";
+  let reachedDone = false;
+
+  const processLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) return;
+    const data = trimmed.slice(6);
+    if (data === "[DONE]") {
+      reachedDone = true;
+      return;
+    }
+    try {
+      const json = JSON.parse(data);
+      if (typeof json?.model === "string" && json.model) {
+        model = json.model;
+        options.onModelResolved?.(model);
+      }
+      const delta = parseUpstreamDelta(json);
+      if (delta) {
+        content += delta;
+        options.onDelta?.(delta);
+      }
+    } catch {}
+  };
+
+  try {
+    while (!reachedDone) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) processLine(line);
+    }
+    buffer += decoder.decode();
+    if (buffer) processLine(buffer);
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {}
+  }
+
+  if (!content.trim()) {
+    throw new AIServiceError("模型没有返回内容", "EMPTY_RESPONSE", 502);
+  }
+  return { content, model: model || options.requestedModel || "" };
+}
+
+async function streamAI(options) {
+  const upstream = await createAIUpstreamRequest({ ...options, stream: true });
+  const result = await consumeAIStream(upstream.response, {
+    requestedModel: upstream.requestedModel,
+    onDelta: options.onDelta,
+    onModelResolved: options.onModelResolved,
+  });
+  recordModelResolution(upstream.requestedModel, result.model);
+  return result;
+}
+
 module.exports = {
   AIServiceError,
   classifyUpstreamError,
@@ -262,5 +330,7 @@ module.exports = {
   resolveRouting,
   createAIUpstreamRequest,
   completeAI,
+  consumeAIStream,
+  streamAI,
   recordModelResolution,
 };

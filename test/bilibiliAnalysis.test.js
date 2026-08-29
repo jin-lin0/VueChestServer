@@ -1,9 +1,24 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  parseAnalysisContent,
   normalizeAnalysis,
   formatAnalysisMarkdown,
+  normalizeQuestionHistory,
+  sampleTranscript,
 } = require("../services/bilibiliAnalysisService");
+
+test("repairs unescaped quotes in structured analysis content", () => {
+  const result = parseAnalysisContent(
+    '{"summary":"涨了称"带粉丝吃肉"、跌了改口"高低切"。","chapters":[{"time":"1.0s","title":"博主"神化"现象","summary":"不要盲目跟随"老师"。"}],"keyPoints":["先做"预期""],"quotes":[],"todos":[]}',
+  );
+  assert.equal(
+    result.summary,
+    "涨了称「带粉丝吃肉」、跌了改口「高低切」。",
+  );
+  assert.equal(result.chapters[0].title, "博主「神化」现象");
+  assert.equal(result.keyPoints[0], "先做「预期」");
+});
 
 test("normalizes bounded subtitle analysis output", () => {
   const result = normalizeAnalysis({
@@ -36,4 +51,27 @@ test("formats analysis as exportable Markdown", () => {
   assert.match(markdown, /^# 测试视频/);
   assert.match(markdown, /## 章节/);
   assert.match(markdown, /- \[ \] 行动/);
+});
+
+test("samples long transcripts across beginning, middle and end", () => {
+  const transcript = `${"A".repeat(120)}${"B".repeat(120)}${"C".repeat(120)}`;
+  const sampled = sampleTranscript(transcript, 90);
+  assert.match(sampled, /【字幕开头】/);
+  assert.match(sampled, /【字幕中段】/);
+  assert.match(sampled, /【字幕结尾】/);
+  assert.match(sampled, /A+/);
+  assert.match(sampled, /B+/);
+  assert.match(sampled, /C+/);
+});
+
+test("bounds and cleans transcript question history", () => {
+  const history = Array.from({ length: 10 }, (_, index) => ({
+    role: index % 2 ? "assistant" : "user",
+    content: ` message-${index} `,
+  }));
+  history.push({ role: "system", content: "ignore" });
+  const normalized = normalizeQuestionHistory(history);
+  assert.equal(normalized.length, 7);
+  assert.equal(normalized[0].content, "message-3");
+  assert.equal(normalized.at(-1).content, "message-9");
 });

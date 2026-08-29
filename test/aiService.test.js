@@ -4,6 +4,7 @@ const {
   classifyUpstreamError,
   estimateTokens,
   chunkText,
+  consumeAIStream,
   parseJsonContent,
 } = require("../services/aiService");
 const {
@@ -49,6 +50,37 @@ test("parses plain and fenced JSON model output", () => {
     items: [1],
   });
   assert.throws(() => parseJsonContent("not json"), /有效 JSON/);
+});
+
+test("consumes AI SSE chunks incrementally and resolves the actual model", async () => {
+  const encoder = new TextEncoder();
+  const deltas = [];
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"model":"resolved-model","choices":[{"delta":{"content":"第一段"}}]}\n\n',
+          ),
+        );
+        controller.enqueue(
+          encoder.encode(
+            'data: {"choices":[{"delta":{"content":"第二段"}}]}\n\ndata: [DONE]\n\n',
+          ),
+        );
+        controller.close();
+      },
+    }),
+  );
+  const result = await consumeAIStream(response, {
+    requestedModel: "requested-model",
+    onDelta: (delta) => deltas.push(delta),
+  });
+  assert.deepEqual(deltas, ["第一段", "第二段"]);
+  assert.deepEqual(result, {
+    content: "第一段第二段",
+    model: "resolved-model",
+  });
 });
 
 test("temporarily demotes models that recently failed or fell back", () => {

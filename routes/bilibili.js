@@ -2,7 +2,52 @@ const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
 const { authMiddleware } = require("../middleware/auth");
-const { analyzeTranscript } = require("../services/bilibiliAnalysisService");
+const {
+  analyzeTranscript,
+  analyzeTranscriptStream,
+  answerTranscriptQuestion,
+  answerTranscriptQuestionStream,
+} = require("../services/bilibiliAnalysisService");
+
+function createSseSession(req, res) {
+  const controller = new AbortController();
+  let clientGone = false;
+  req.once("aborted", () => controller.abort());
+  res.once("close", () => {
+    clientGone = true;
+    if (!res.writableEnded) controller.abort();
+  });
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+  return {
+    signal: controller.signal,
+    write(payload) {
+      if (clientGone) return;
+      try {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        if (typeof res.flush === "function") res.flush();
+      } catch {
+        clientGone = true;
+        controller.abort();
+      }
+    },
+    finish() {
+      if (clientGone) return;
+      try {
+        res.write("data: [DONE]\n\n");
+        if (typeof res.flush === "function") res.flush();
+        res.end();
+      } catch {}
+    },
+    get clientGone() {
+      return clientGone;
+    },
+  };
+}
 
 /**
  * B站字幕提取接口
@@ -192,7 +237,14 @@ async function extractOnePage(bvid, cid, sessdata) {
         "该分P字幕需登录后查看，可在「高级」里填入你自己的 SESSDATA 后重试",
       );
     }
-    throw new Error("该分P暂无字幕（既无官方字幕也无 AI 字幕）");
+    if (sessdata) {
+      throw new Error(
+        "未获取到该分P字幕；当前 SESSDATA 可能已过期，更新凭证后重试，或确认视频确实没有字幕",
+      );
+    }
+    throw new Error(
+      "未获取到公开字幕；该视频可能需要登录后查看，请填写你自己的 SESSDATA 后重试",
+    );
   }
 
   // 2. 选字幕轨道：按优先级取第一条命中的轨道，均无则兜底第一条
@@ -310,6 +362,120 @@ router.post("/analyze", authMiddleware, async (req, res) => {
       error: error.message || "字幕分析失败",
       code: error.code || "AI_ANALYSIS_FAILED",
     });
+  }
+});
+
+router.post("/analyze/stream", authMiddleware, async (req, res) => {
+  const { title, bvid, text, provider, model, type, prompt } = req.body || {};
+  if (!bvid || !provider || !model || !text) {
+    return res.status(400).json({
+      success: false,
+      error: "缺少视频、字幕或模型信息",
+      code: "VALIDATION",
+    });
+  }
+
+  const session = createSseSession(req, res);
+  try {
+    const data = await analyzeTranscriptStream({
+      title: String(title || bvid).slice(0, 200),
+      bvid: String(bvid).slice(0, 20),
+      text,
+      providerId: provider,
+      model,
+      type: ["overview", "translate", "custom"].includes(type)
+        ? type
+        : "overview",
+      prompt,
+      signal: session.signal,
+      onDelta: (delta) => session.write({ type: "delta", delta }),
+      onProgress: (progress) =>
+        session.write({ type: "progress", ...progress }),
+    });
+    session.write({ type: "complete", data });
+  } catch (error) {
+    if (!session.signal.aborted && !session.clientGone) {
+      session.write({
+        type: "error",
+        error: error.message || "字幕分析失败",
+        code: error.code || "AI_ANALYSIS_FAILED",
+      });
+    }
+  } finally {
+    session.finish();
+  }
+});
+
+// 基于当前字幕与分析结果原地追问，避免跳转到通用 AI 页面丢失视频上下文。
+router.post("/ask", authMiddleware, async (req, res) => {
+  const { title, bvid, text, analysis, question, history, provider, model } =
+    req.body || {};
+  if (!bvid || !provider || !model || !text || !question) {
+    return res.status(400).json({
+      success: false,
+      error: "缺少视频、字幕、问题或模型信息",
+      code: "VALIDATION",
+    });
+  }
+
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  try {
+    const data = await answerTranscriptQuestion({
+      title: String(title || bvid).slice(0, 200),
+      text,
+      analysis,
+      question,
+      history,
+      providerId: provider,
+      model,
+      signal: controller.signal,
+    });
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(error.status || 502).json({
+      success: false,
+      error: error.message || "字幕问答失败",
+      code: error.code || "AI_QUESTION_FAILED",
+    });
+  }
+});
+
+router.post("/ask/stream", authMiddleware, async (req, res) => {
+  const { title, bvid, text, analysis, question, history, provider, model } =
+    req.body || {};
+  if (!bvid || !provider || !model || !text || !question) {
+    return res.status(400).json({
+      success: false,
+      error: "缺少视频、字幕、问题或模型信息",
+      code: "VALIDATION",
+    });
+  }
+
+  const session = createSseSession(req, res);
+  try {
+    const data = await answerTranscriptQuestionStream({
+      title: String(title || bvid).slice(0, 200),
+      text,
+      analysis,
+      question,
+      history,
+      providerId: provider,
+      model,
+      signal: session.signal,
+      onDelta: (delta) => session.write({ type: "delta", delta }),
+    });
+    session.write({ type: "complete", data });
+  } catch (error) {
+    if (!session.signal.aborted && !session.clientGone) {
+      session.write({
+        type: "error",
+        error: error.message || "字幕问答失败",
+        code: error.code || "AI_QUESTION_FAILED",
+      });
+    }
+  } finally {
+    session.finish();
   }
 });
 

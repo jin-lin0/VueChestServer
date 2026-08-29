@@ -152,6 +152,11 @@ test(
 
 test("compression bypass recognizes the AI SSE route", () => {
   assert.equal(isStreamingRequest({ path: "/api/ai-chat/chat" }), true);
+  assert.equal(
+    isStreamingRequest({ path: "/api/bilibili/analyze/stream" }),
+    true,
+  );
+  assert.equal(isStreamingRequest({ path: "/api/bilibili/ask/stream" }), true);
   assert.equal(isStreamingRequest({ path: "/api/ai-chat/providers" }), false);
 });
 
