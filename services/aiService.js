@@ -1,3 +1,4 @@
+const { readSseData } = require("../utils/sse");
 const {
   getApiKey,
   getProviderMeta,
@@ -255,58 +256,47 @@ async function completeAI(options) {
 }
 
 async function consumeAIStream(response, options = {}) {
-  const reader = response.body?.getReader();
-  if (!reader) {
+  if (!response.body)
     throw new AIServiceError("无法读取 AI 响应流", "INVALID_AI_STREAM", 502);
-  }
-  const decoder = new TextDecoder();
-  let buffer = "";
   let content = "";
   let model = options.requestedModel || "";
   let reachedDone = false;
-
-  const processLine = (line) => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("data: ")) return;
-    const data = trimmed.slice(6);
+  for await (const data of readSseData(response.body, options.signal)) {
     if (data === "[DONE]") {
       reachedDone = true;
-      return;
+      break;
     }
+    let json;
     try {
-      const json = JSON.parse(data);
-      if (typeof json?.model === "string" && json.model) {
-        model = json.model;
-        options.onModelResolved?.(model);
-      }
-      const delta = parseUpstreamDelta(json);
-      if (delta) {
-        content += delta;
-        options.onDelta?.(delta);
-      }
-    } catch {}
-  };
-
-  try {
-    while (!reachedDone) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) processLine(line);
+      json = JSON.parse(data);
+    } catch {
+      continue;
     }
-    buffer += decoder.decode();
-    if (buffer) processLine(buffer);
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {}
+    if (json?.error) {
+      const message =
+        typeof json.error === "string"
+          ? json.error
+          : json.error.message || "AI 响应流中断";
+      const classified = classifyUpstreamError(
+        Number(json.error?.code) || 502,
+        message,
+      );
+      throw new AIServiceError(message, classified.code, classified.status);
+    }
+    if (typeof json?.model === "string" && json.model) {
+      model = json.model;
+      options.onModelResolved?.(model);
+    }
+    const delta = parseUpstreamDelta(json);
+    if (delta) {
+      content += delta;
+      options.onDelta?.(delta);
+    }
   }
-
-  if (!content.trim()) {
+  if (!reachedDone)
+    throw new AIServiceError("AI 响应未正常完成", "INCOMPLETE_STREAM", 502);
+  if (!content.trim())
     throw new AIServiceError("模型没有返回内容", "EMPTY_RESPONSE", 502);
-  }
   return { content, model: model || options.requestedModel || "" };
 }
 
@@ -314,6 +304,7 @@ async function streamAI(options) {
   const upstream = await createAIUpstreamRequest({ ...options, stream: true });
   const result = await consumeAIStream(upstream.response, {
     requestedModel: upstream.requestedModel,
+    signal: options.signal,
     onDelta: options.onDelta,
     onModelResolved: options.onModelResolved,
   });

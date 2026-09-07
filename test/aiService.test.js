@@ -98,3 +98,47 @@ test("temporarily demotes models that recently failed or fell back", () => {
   );
   resetModelHealth();
 });
+
+test("rejects an upstream stream that closes without DONE after partial output", async () => {
+  const deltas = [];
+  await assert.rejects(
+    consumeAIStream(
+      new Response('data:{"choices":[{"delta":{"content":"partial"}}]}\n\n'),
+      { onDelta: (delta) => deltas.push(delta) },
+    ),
+    { code: "INCOMPLETE_STREAM" },
+  );
+  assert.deepEqual(deltas, ["partial"]);
+});
+
+test("surfaces an upstream error event instead of treating it as a completed answer", async () => {
+  await assert.rejects(
+    consumeAIStream(
+      new Response(
+        'data:{"error":{"code":429,"message":"rate limited"}}\n\ndata:[DONE]\n\n',
+      ),
+    ),
+    { code: "RATE_LIMIT" },
+  );
+});
+
+test("releases a stream at DONE even when the provider keeps its connection open", async () => {
+  let cancelled = false;
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data:{"choices":[{"delta":{"content":"OK"}}]}\r\n\r\ndata:[DONE]\r\n\r\n',
+          ),
+        );
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+  );
+  assert.equal((await consumeAIStream(response)).content, "OK");
+  assert.equal(cancelled, true);
+  assert.equal(response.body.locked, false);
+});

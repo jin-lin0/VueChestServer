@@ -47,6 +47,7 @@ async function withAiRouter(overrides, run) {
     ...overrides.message,
   };
   const service = {
+    consumeAIStream: require("../services/aiService").consumeAIStream,
     createAIUpstreamRequest: async () => ({
       response: new Response(
         'data: {"model":"backup/model:free"}\n\n' +
@@ -246,6 +247,47 @@ test(
         );
         assert.equal(response.status, 404);
         assert.equal(destroyed, false);
+      },
+    );
+  },
+);
+
+test(
+  "persists available partial text before reporting an interrupted upstream",
+  { concurrency: false },
+  async () => {
+    const created = [];
+    await withAiRouter(
+      {
+        service: {
+          createAIUpstreamRequest: async () => ({
+            response: new Response(
+              'data:{"choices":[{"delta":{"content":"partial"}}]}\n\n',
+            ),
+          }),
+        },
+        message: {
+          create: async (value) => {
+            created.push(value);
+            return { ...value, id: created.length };
+          },
+        },
+      },
+      async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/ai-chat/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversationId: "partial",
+            provider: "openrouter",
+            model: "model",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        });
+        const output = await response.text();
+        assert.equal(created[1].content, "partial");
+        assert.match(output, /INCOMPLETE_STREAM/);
+        assert.ok(output.indexOf('"persisted"') < output.indexOf('"error"'));
       },
     );
   },

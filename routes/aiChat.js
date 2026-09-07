@@ -4,12 +4,10 @@ const router = express.Router();
 const AIChatConversation = require("../models/aiChatConversation");
 const AIChatMessage = require("../models/aiChatMessage");
 const { authMiddleware } = require("../middleware/auth");
-const {
-  getConfiguredProviders,
-  parseUpstreamDelta,
-} = require("../config/aiProviders");
+const { getConfiguredProviders } = require("../config/aiProviders");
 const {
   createAIUpstreamRequest,
+  consumeAIStream,
   recordModelResolution,
 } = require("../services/aiService");
 
@@ -181,9 +179,13 @@ router.post("/chat", authMiddleware, async (req, res) => {
 
   let upstream;
   const upstreamController = new AbortController();
+  let clientGone = false;
   req.once("aborted", () => upstreamController.abort());
   res.once("close", () => {
-    if (!res.writableEnded) upstreamController.abort();
+    if (!res.writableEnded) {
+      clientGone = true;
+      upstreamController.abort();
+    }
   });
   try {
     const result = await createAIUpstreamRequest({
@@ -200,6 +202,7 @@ router.post("/chat", authMiddleware, async (req, res) => {
     });
     upstream = result.response;
   } catch (e) {
+    if (clientGone || res.destroyed) return;
     return res.status(e.status || 502).json({
       success: false,
       error: e.message || "AI 请求失败",
@@ -214,15 +217,12 @@ router.post("/chat", authMiddleware, async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   if (typeof res.flushHeaders === "function") res.flushHeaders();
 
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
   let fullAssistant = "";
   let resolvedModel = model;
   let announcedModel = "";
-  let clientGone = false;
 
   const writePayload = (payload) => {
+    if (clientGone || res.destroyed) return;
     try {
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
       if (typeof res.flush === "function") res.flush();
@@ -236,49 +236,23 @@ router.post("/chat", authMiddleware, async (req, res) => {
 
   let streamFailure = null;
   try {
-    while (!clientGone) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data: ")) continue;
-        const data = trimmed.slice(6);
-        if (data === "[DONE]") break;
-
-        try {
-          const json = JSON.parse(data);
-          const actualModel = typeof json?.model === "string" ? json.model : "";
-          if (actualModel && actualModel !== announcedModel) {
-            resolvedModel = actualModel;
-            announcedModel = actualModel;
-            writePayload({ model: actualModel });
-          }
-          const delta = parseUpstreamDelta(json);
-          if (delta) {
-            fullAssistant += delta;
-            writeChunk(delta);
-          }
-        } catch {}
-      }
-    }
+    await consumeAIStream(upstream, {
+      requestedModel: model,
+      signal: upstreamController.signal,
+      onModelResolved: (actualModel) => {
+        resolvedModel = actualModel;
+        if (actualModel !== announcedModel) {
+          announcedModel = actualModel;
+          writePayload({ model: actualModel });
+        }
+      },
+      onDelta: (delta) => {
+        fullAssistant += delta;
+        writeChunk(delta);
+      },
+    });
   } catch (error) {
     streamFailure = error;
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {}
-  }
-
-  if (streamFailure && !clientGone) {
-    writePayload({
-      error: streamFailure?.message || "AI 响应流中断",
-      code: streamFailure?.code || "STREAM_INTERRUPTED",
-    });
   }
 
   let persisted = null;
@@ -299,7 +273,7 @@ router.post("/chat", authMiddleware, async (req, res) => {
         },
       );
       if (!clientGone) writePayload({ persisted });
-    } else if (!clientGone) {
+    } else if (!clientGone && !streamFailure) {
       writePayload({ error: "模型没有返回内容", code: "EMPTY_RESPONSE" });
     }
   } catch (e) {
@@ -310,6 +284,13 @@ router.post("/chat", authMiddleware, async (req, res) => {
         code: "PERSISTENCE_FAILED",
       });
     }
+  }
+
+  if (streamFailure && !clientGone) {
+    writePayload({
+      error: streamFailure.message || "AI 响应流中断",
+      code: streamFailure.code || "STREAM_INTERRUPTED",
+    });
   }
 
   if (!clientGone) {
