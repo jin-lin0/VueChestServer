@@ -56,7 +56,6 @@ async function withAiRouter(overrides, run) {
         { status: 200 },
       ),
     }),
-    recordModelResolution: () => {},
     ...overrides.service,
   };
 
@@ -146,6 +145,53 @@ test(
         assert.match(text, /backup\/model:free/);
         assert.match(text, /assistantMessageId/);
         assert.equal(created[1].model, "backup/model:free");
+      },
+    );
+  },
+);
+
+test(
+  "chat route forwards upstream mid-stream errors and keeps partial content",
+  { concurrency: false },
+  async () => {
+    const created = [];
+    await withAiRouter(
+      {
+        message: {
+          create: async (value) => {
+            created.push(value);
+            return { ...value, id: created.length };
+          },
+        },
+        service: {
+          createAIUpstreamRequest: async () => ({
+            response: new Response(
+              'data: {"model":"backup/model:free","choices":[{"delta":{"content":"部分"}}]}\n\n' +
+                'data: {"error":{"code":429,"message":"Provider rate limited"}}\n\n' +
+                "data: [DONE]\n\n",
+              { status: 200 },
+            ),
+          }),
+        },
+      },
+      async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/ai-chat/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversationId: "midstream-error",
+            provider: "openrouter",
+            model: "primary/model:free",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        });
+        assert.equal(response.status, 200);
+        const text = await response.text();
+        assert.match(text, /"content":"部分"/);
+        assert.match(text, /Provider rate limited/);
+        assert.match(text, /"code":"RATE_LIMIT"/);
+        assert.match(text, /\[DONE\]/);
+        assert.equal(created[1].content, "部分");
       },
     );
   },

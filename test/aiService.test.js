@@ -7,12 +7,6 @@ const {
   consumeAIStream,
   parseJsonContent,
 } = require("../services/aiService");
-const {
-  recordModelFailure,
-  recordModelResolution,
-  rankModelsByHealth,
-  resetModelHealth,
-} = require("../utils/aiModelHealth");
 
 test("classifies actionable upstream errors", () => {
   assert.deepEqual(classifyUpstreamError(429, "rate limited"), {

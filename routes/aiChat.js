@@ -6,6 +6,7 @@ const AIChatMessage = require("../models/aiChatMessage");
 const { authMiddleware } = require("../middleware/auth");
 const { getConfiguredProviders } = require("../config/aiProviders");
 const {
+  classifyUpstreamError,
   createAIUpstreamRequest,
   consumeAIStream,
   recordModelResolution,
@@ -235,6 +236,7 @@ router.post("/chat", authMiddleware, async (req, res) => {
     writePayload({ choices: [{ delta: { content: delta } }] });
 
   let streamFailure = null;
+  let upstreamDone = false;
   try {
     await consumeAIStream(upstream, {
       requestedModel: model,
@@ -258,7 +260,6 @@ router.post("/chat", authMiddleware, async (req, res) => {
   let persisted = null;
   try {
     if (fullAssistant) {
-      recordModelResolution(model, resolvedModel);
       persisted = await persistTurn(
         userId,
         conversationId,

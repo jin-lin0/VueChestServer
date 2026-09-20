@@ -6,16 +6,11 @@ const {
   buildUpstreamRequest,
   parseUpstreamDelta,
 } = require("../config/aiProviders");
-const {
-  recordModelFailure,
-  recordModelResolution,
-  rankModelsByHealth,
-} = require("../utils/aiModelHealth");
 
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_OPENROUTER_MODELS = 3;
+const BODY_READ_TIMEOUT_MS = 300_000;
 
 class AIServiceError extends Error {
   constructor(message, code, status = 502, details = null) {
@@ -56,6 +51,24 @@ function extractUpstreamMessage(payload, fallback) {
   return (
     payload?.error?.message || payload?.error || payload?.message || fallback
   );
+}
+
+/**
+ * 非流式响应的读体超时兜底：建连超时不再覆盖 body 读取，
+ * 用整体读体上限防止慢滴流式服务器把请求无限挂起。
+ */
+function withReadTimeout(promise) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(new AIServiceError("AI 响应读取超时", "AI_TIMEOUT", 504)),
+        BODY_READ_TIMEOUT_MS,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function estimateTokens(text) {
@@ -131,16 +144,7 @@ async function resolveRouting(providerId, requestedModel) {
     throw new AIServiceError(`平台 ${meta.name} 未配置 API Key`, "NO_KEY", 400);
   }
 
-  let models;
-  try {
-    models = rankModelsByHealth(await getProviderModels(providerId));
-  } catch (error) {
-    throw new AIServiceError(
-      `模型列表暂时不可用: ${error.message}`,
-      "MODEL_LIST_UNAVAILABLE",
-      503,
-    );
-  }
+  const models = await getProviderModels(providerId);
   if (!models.some((item) => item.id === requestedModel)) {
     throw new AIServiceError(
       `模型 ${requestedModel} 不属于平台 ${meta.name} 支持列表`,
@@ -149,14 +153,7 @@ async function resolveRouting(providerId, requestedModel) {
     );
   }
 
-  const fallbackModels =
-    providerId === "openrouter"
-      ? models
-          .map((item) => item.id)
-          .filter((id) => id !== requestedModel)
-          .slice(0, MAX_OPENROUTER_MODELS - 1)
-      : [];
-  return { meta, apiKey, models, fallbackModels };
+  return { meta, apiKey, models };
 }
 
 async function createAIUpstreamRequest(options) {
@@ -171,13 +168,17 @@ async function createAIUpstreamRequest(options) {
     signal,
   } = options;
   const routing = await resolveRouting(providerId, model);
-  const signals = [AbortSignal.timeout(timeoutMs)];
+  // 超时只约束「发起请求 → 拿到响应头」这一段，拿到响应头后立即清除计时器。
+  // 免费模型出词慢，若用整流硬超时会把正常的流式长回答拦腰截断；
+  // 挂死的流由 undici 默认的 bodyTimeout（300s 无数据）兜底。
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+  const signals = [timeoutController.signal];
   if (signal) signals.push(signal);
 
   const request = buildUpstreamRequest({
     providerId,
     model,
-    fallbackModels: routing.fallbackModels,
     messages,
     stream,
     maxTokens,
@@ -202,6 +203,8 @@ async function createAIUpstreamRequest(options) {
       "UPSTREAM_NETWORK",
       502,
     );
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!response.ok) {
@@ -215,12 +218,6 @@ async function createAIUpstreamRequest(options) {
       `上游返回 ${response.status}`,
     );
     const classified = classifyUpstreamError(response.status, message);
-    if (
-      classified.code === "RATE_LIMIT" ||
-      classified.code === "UPSTREAM_UNAVAILABLE"
-    ) {
-      recordModelFailure(model, classified.code);
-    }
     throw new AIServiceError(message, classified.code, classified.status, {
       upstreamStatus: response.status,
     });
@@ -229,7 +226,6 @@ async function createAIUpstreamRequest(options) {
   return {
     response,
     requestedModel: model,
-    fallbackModels: routing.fallbackModels,
   };
 }
 
@@ -237,17 +233,16 @@ async function completeAI(options) {
   const upstream = await createAIUpstreamRequest({ ...options, stream: false });
   let payload;
   try {
-    payload = await upstream.response.json();
-  } catch {
+    payload = await withReadTimeout(upstream.response.json());
+  } catch (error) {
+    if (error instanceof AIServiceError) throw error;
     throw new AIServiceError("AI 响应格式错误", "INVALID_AI_RESPONSE", 502);
   }
   const actualModel = payload?.model || upstream.requestedModel;
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) {
-    recordModelFailure(actualModel, "EMPTY_RESPONSE");
     throw new AIServiceError("模型没有返回内容", "EMPTY_RESPONSE", 502);
   }
-  recordModelResolution(upstream.requestedModel, actualModel);
   return {
     content,
     model: actualModel,
@@ -302,19 +297,18 @@ async function consumeAIStream(response, options = {}) {
 
 async function streamAI(options) {
   const upstream = await createAIUpstreamRequest({ ...options, stream: true });
-  const result = await consumeAIStream(upstream.response, {
+  return consumeAIStream(upstream.response, {
     requestedModel: upstream.requestedModel,
     signal: options.signal,
     onDelta: options.onDelta,
     onModelResolved: options.onModelResolved,
   });
-  recordModelResolution(upstream.requestedModel, result.model);
-  return result;
 }
 
 module.exports = {
   AIServiceError,
   classifyUpstreamError,
+  extractUpstreamMessage,
   estimateTokens,
   chunkText,
   parseJsonContent,
@@ -323,5 +317,4 @@ module.exports = {
   completeAI,
   consumeAIStream,
   streamAI,
-  recordModelResolution,
 };
