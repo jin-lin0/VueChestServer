@@ -1,6 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const { runWestock } = require("../services/westock/client");
+const { authMiddleware } = require("../middleware/auth");
+
+// 这些接口每个请求都会 spawn 一个子进程，是有状态、有并发上限的昂贵资源，
+// 因此与 bilibili / aiChat 等重上游路由一致，整体要求登录后再访问。
+router.use(authMiddleware);
 
 const ENGINE_SET = new Set(["data", "screen"]);
 
@@ -155,11 +160,12 @@ const COMMAND_SPEC = {
     engine: "data",
     label: "公告",
     desc: "公司公告列表 / 内容",
-    example: "notice list --code sh600519 --limit 10",
+    example: "notice list sh600519 --limit 10",
     build: (q) => [
       "notice",
       q.sub || "list",
-      ...(q.code ? ["--code", q.code] : []),
+      // 股票代码是位置参数（CLI 不认 --code，传了会以退出码 1 报未知参数）。
+      ...(q.code ? [q.code] : []),
       ...(q.type ? ["--type", q.type] : []),
       ...(q.limit ? ["--limit", q.limit] : []),
       ...(q.offset ? ["--offset", q.offset] : []),
@@ -173,7 +179,8 @@ const COMMAND_SPEC = {
     build: (q) => [
       "fund",
       q.sub || "flow",
-      ...(q.code ? ["--code", q.code] : []),
+      // 同上：代码走位置参数。
+      ...(q.code ? [q.code] : []),
       ...(q.start ? ["--start", q.start] : []),
       ...(q.end ? ["--end", q.end] : []),
     ],
@@ -293,27 +300,21 @@ const COMMAND_SPEC = {
 };
 
 function cleanArgs(args) {
+  // 只做类型归一与去空，不做长度截断：截断会把超长值静默改写成另一个值，
+  // 也会让 client.js 里的「参数过长」校验永远不可达。长度由白名单统一把关。
   return args
     .filter((value) => value !== undefined && value !== null && value !== "")
-    .map((value) => String(value).slice(0, 200));
+    .map((value) => String(value));
 }
 
 // 通用执行器：直接 spawn westock CLI，原样返回解析后的输出。覆盖全部命令。
+// 参数白名单 / 长度 / 子进程并发闸门统一在 services/westock/client.js 里强制，
+// 这里不再重复校验，避免两处规则漂移。
 router.post("/exec", async (req, res, next) => {
   try {
     const body = req.body || {};
     const engine = ENGINE_SET.has(body.engine) ? body.engine : "data";
     const args = cleanArgs(Array.isArray(body.args) ? body.args : []);
-    if (args.length === 0) {
-      const error = new Error("args 不能为空");
-      error.status = 400;
-      throw error;
-    }
-    if (args.length > 40) {
-      const error = new Error("参数过多（上限 40）");
-      error.status = 400;
-      throw error;
-    }
     const result = await runWestock(engine, args);
     res.json({ success: result.success, engine, args, ...result });
   } catch (error) {
@@ -342,9 +343,12 @@ for (const [id, spec] of Object.entries(COMMAND_SPEC)) {
   router.get(`/${id}`, async (req, res, next) => {
     try {
       const args = cleanArgs(spec.build(req.query));
-      if (args.length === 0 || args.every((arg) => !arg.trim())) {
+      // 只剩命令名说明关键定位参数（股票代码/策略名/指标名）全缺，
+      // 直接 400，不要白白 spawn 一个必然失败的进程。
+      if (args.length <= 1) {
         const error = new Error(`命令 ${id} 缺少必要参数`);
         error.status = 400;
+        error.code = "VALIDATION";
         throw error;
       }
       const result = await runWestock(spec.engine, args);
@@ -356,3 +360,7 @@ for (const [id, spec] of Object.entries(COMMAND_SPEC)) {
 }
 
 module.exports = router;
+// 供测试断言「每个命名接口在给定 query 下构造出的参数都能通过 client 的白名单」，
+// 避免新增命令/参数时静默踩到验证层。
+module.exports.COMMAND_SPEC = COMMAND_SPEC;
+module.exports.cleanArgs = cleanArgs;
