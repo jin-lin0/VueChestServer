@@ -105,6 +105,10 @@ app.use("/api/developer", developerRouter);
 const stockResearchRouter = require("./routes/stockResearch");
 app.use("/api/research-stocks", stockResearchRouter);
 
+// westock 能力封装：spawn 官方 CLI（含混淆签名），将 K线/行情/选股/策略等封装为接口
+const westockRouter = require("./routes/westock");
+app.use("/api/westock", westockRouter);
+
 // 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
 if (!process.env.VERCEL) {
   sequelize

@@ -10,7 +10,10 @@ const CACHE_TTL = {
   quote: 60 * 1000,
   financials: 30 * 60 * 1000,
   notices: 10 * 60 * 1000,
+  kline: 5 * 60 * 1000,
 };
+
+const KLINE_DEFAULT_COUNT = 2000;
 
 function validateCode(raw) {
   const code = String(raw || "").trim();
@@ -248,6 +251,37 @@ router.get("/:code/notices", async (req, res, next) => {
       },
     );
     res.json({ success: true, data, source: "eastmoney" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/:code/kline", async (req, res, next) => {
+  try {
+    const code = validateCode(req.params.code);
+    const period = ["day", "week", "month"].includes(String(req.query.period))
+      ? String(req.query.period)
+      : "day";
+    const count = Math.min(
+      2000,
+      Math.max(10, Number.parseInt(req.query.count, 10) || KLINE_DEFAULT_COUNT),
+    );
+    const symbol = `${marketFor(code).toLowerCase()}${code}`;
+    const data = await cached(
+      `kline:${code}:${period}:${count}`,
+      CACHE_TTL.kline,
+      async () => {
+        const payload = await fetchJson(
+          `https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=${symbol},${period},,,${count},&qfq=1`,
+        );
+        const rows = payload?.data?.[symbol]?.[period];
+        if (!Array.isArray(rows) || rows.length === 0) {
+          throw new Error("未找到 K 线数据");
+        }
+        return rows;
+      },
+    );
+    res.json({ success: true, data, source: "tencent" });
   } catch (error) {
     next(error);
   }
