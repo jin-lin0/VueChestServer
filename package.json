@@ -1,5 +1,5 @@
 {
-  "name": "aichat-server",
+  "name": "vuechest-server",
   "version": "1.0.0",
   "description": "Server for AI chat projects",
   "main": "index.js",
