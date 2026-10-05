@@ -137,6 +137,89 @@ test("parseOutput 解析 JSON", () => {
   assert.equal(parsed.data.code, 0);
 });
 
+// strategy 传 --start/--end 时 CLI 会按天输出多张表。
+// 回归用例：原先所有 `|` 行被当成一张表，会把后续表的数据与表头行一起混进来，
+// 并且丢掉每行属于哪一天；这里断言按日合并且带 signalDate。
+test("parseOutput 把多日区间输出的多张表按日合并", () => {
+  const parsed = parseOutput(
+    [
+      "**早晨之星** (2026-09-24) - 共 2 只",
+      "| code | name |",
+      "| --- | --- |",
+      "| sh600178 | 东安动力 |",
+      "| sz001376 | 百通能源 |",
+      "",
+      "**早晨之星** (2026-09-25) - 共 1 只",
+      "| code | name |",
+      "| --- | --- |",
+      "| sh603042 | 华脉科技 |",
+    ].join("\n"),
+  );
+  assert.equal(parsed.kind, "table");
+  assert.equal(parsed.multiDay, true);
+  assert.deepEqual(parsed.columns, ["code", "name", "signalDate"]);
+  // 2 + 1 = 3 行，且第二张表的表头行不能被当成数据
+  assert.equal(parsed.rows.length, 3);
+  assert.equal(parsed.rows[0].code, "sh600178");
+  assert.equal(parsed.rows[0].signalDate, "2026-09-24");
+  assert.equal(parsed.rows[2].name, "华脉科技");
+  assert.equal(parsed.rows[2].signalDate, "2026-09-25");
+  // 不允许出现值为列名的「数据行」
+  assert.equal(
+    parsed.rows.some((r) => r.code === "code" && r.name === "name"),
+    false,
+  );
+});
+
+test("parseOutput 多日区间的 meta 不误报分页信息", () => {
+  const parsed = parseOutput(
+    [
+      "**早晨之星** (2026-09-24) - 共 2 只 | 显示 1-2/2",
+      "| code | name |",
+      "| --- | --- |",
+      "| sh600178 | 东安动力 |",
+      "**早晨之星** (2026-09-25) - 共 2 只 | 显示 1-2/2",
+      "| code | name |",
+      "| --- | --- |",
+      "| sh603042 | 华脉科技 |",
+    ].join("\n"),
+  );
+  // 首日的「显示 1-2/2」不能被当成整个区间的分页信息
+  assert.equal(parsed.meta.includes("显示"), false);
+  assert.equal(parsed.meta.includes("2 个交易日"), true);
+  assert.equal(parsed.meta.includes("共 2 条"), true);
+});
+
+test("parseOutput 单表输出的结构保持不变（不引入 signalDate）", () => {
+  const parsed = parseOutput(
+    "**策略选股** (2026-09-23) - 共 2 只 | 显示 1-2/2\n| code | name |\n| --- | --- |\n| sh600519 | 贵州茅台 |",
+  );
+  assert.equal(parsed.kind, "table");
+  assert.equal(parsed.multiDay, undefined);
+  assert.deepEqual(parsed.columns, ["code", "name"]);
+  assert.equal(parsed.meta, "策略选股 (2026-09-23) - 共 2 只 | 显示 1-2/2");
+});
+
+test("parseOutput 多日区间下各表列数不齐时按首表列对齐补空串", () => {
+  const parsed = parseOutput(
+    [
+      "**策略选股** (2026-09-24) - 共 1 只",
+      "| code | name |",
+      "| --- | --- |",
+      "| sh600178 | 东安动力 |",
+      "**策略选股** (2026-09-25) - 共 1 只",
+      "| code | name |",
+      "| --- | --- |",
+      "| sh603042 | 华脉科技 |",
+    ].join("\n"),
+  );
+  assert.equal(parsed.rows.length, 2);
+  for (const row of parsed.rows) {
+    assert.deepEqual(Object.keys(row), ["code", "name", "signalDate"]);
+    assert.equal(typeof row.signalDate, "string");
+  }
+});
+
 test("parseOutput 对非表格文本回退为 text", () => {
   assert.deepEqual(parseOutput("股票查询工具 - 命令行接口"), {
     kind: "text",

@@ -163,25 +163,9 @@ function isSeparator(cells) {
   return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
 
-// 将 westock 表格类命令的 Markdown 输出解析为结构化数据。
-// 形如：
-//   **标题** (日期) - 共 N 只 | 显示 a-b/N
-//   | col1 | col2 |
-//   | --- | --- |
-//   | v1 | v2 |
-function parseMarkdownTable(text) {
-  const lines = text.split("\n").map((line) => line.trim());
-  const titleMatch = text.match(/\*\*(.+?)\*\*/);
-  const title = titleMatch ? titleMatch[1].trim() : "";
-  const metaLine = lines.find((line) => line.includes("**"));
-  let meta = "";
-  if (metaLine) {
-    meta = metaLine.replace(/\*\*(.+?)\*\*/g, "$1").trim();
-  }
-
-  const tableLines = lines.filter((line) => line.startsWith("|"));
+// 解析单张 Markdown 表。返回 null 表示这段文本里没有表。
+function parseOneTable(tableLines) {
   if (tableLines.length < 2) return null;
-
   const header = splitRow(tableLines[0]);
   if (!header.length) return null;
 
@@ -190,6 +174,9 @@ function parseMarkdownTable(text) {
     const cells = splitRow(tableLines[i]);
     if (isSeparator(cells)) continue;
     if (cells.length < header.length) continue;
+    // 多表场景下，后续表的表头行会被当成数据行拼进来（值恰好等于列名）。
+    // 这里按值判重：表头行的每一格都等于对应列名，不是数据。
+    if (cells.every((cell, idx) => cell === header[idx])) continue;
     const row = {};
     header.forEach((key, idx) => {
       row[key] = cells[idx] ?? "";
@@ -197,7 +184,87 @@ function parseMarkdownTable(text) {
     rows.push(row);
   }
   if (!rows.length) return null;
-  return { kind: "table", title, meta, columns: header, rows };
+  return { columns: header, rows };
+}
+
+/**
+ * 将 westock 表格类命令的 Markdown 输出解析为结构化数据。
+ * 形如：
+ *   **标题** (日期) - 共 N 只 | 显示 a-b/N
+ *   | col1 | col2 |
+ *   | --- | --- |
+ *   | v1 | v2 |
+ *
+ * 注意：`strategy --start/--end`（以及部分 label 区间查询）会输出**多张表**，
+ * 每张表有自己的日期标题。这里按标题把文本切块、逐块解析，
+ * 避免把多张表当成一张 —— 那会把后续表的数据混进来，
+ * 同时丢掉每行属于哪一天的信息。
+ */
+function parseMarkdownTable(text) {
+  const lines = text.split("\n");
+  // 每个块的起止：标题行（含 ** 的行）或表格起始。
+  // 用「按标题行切分」而非「按表切分」，因为日期只出现在标题行里。
+  const blocks = [];
+  let current = null;
+  for (const raw of lines) {
+    const line = raw.trim();
+    const isTitle = line.includes("**") && !line.startsWith("|");
+    if (isTitle) {
+      if (current) blocks.push(current);
+      current = { titleLine: line, tableLines: [] };
+      continue;
+    }
+    if (line.startsWith("|")) {
+      if (!current) current = { titleLine: "", tableLines: [] };
+      current.tableLines.push(line);
+    }
+  }
+  if (current) blocks.push(current);
+
+  const tables = [];
+  for (const block of blocks) {
+    const one = parseOneTable(block.tableLines);
+    if (!one) continue;
+    const titleMatch = block.titleLine.match(/\*\*(.+?)\*\*/);
+    tables.push({
+      title: titleMatch ? titleMatch[1].trim() : "",
+      meta: block.titleLine.replace(/\*\*(.+?)\*\*/g, "$1").trim(),
+      columns: one.columns,
+      rows: one.rows,
+    });
+  }
+  if (!tables.length) return null;
+
+  // 单表时保持原结构（title/meta/columns/rows 在顶层），不引入无谓的嵌套。
+  if (tables.length === 1) {
+    return { kind: "table", ...tables[0] };
+  }
+  // 多表：合并为一张，并把每行所属日期落到 signalDate，方便前端按日分组展示。
+  const columns = tables[0].columns;
+  if (!columns.includes("signalDate")) columns.push("signalDate");
+  const rows = [];
+  for (const t of tables) {
+    // 各表列数可能不同（少数命令列不齐），按首表列对齐，缺列补空串。
+    const date = (t.meta.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "";
+    for (const row of t.rows) {
+      const merged = {};
+      for (const col of columns) {
+        merged[col] = col === "signalDate" ? date : (row[col] ?? "");
+      }
+      rows.push(merged);
+    }
+  }
+  const total = rows.length;
+  return {
+    kind: "table",
+    title: tables[0].title,
+    // 多表时逐日日期不能塞进单个 meta，用「共 N 条、区间内 M 天」概括，
+    // 避免前端把首日的「显示 a-b/N」误读成整个区间的分页信息。
+    meta: `${tables[0].title} · 区间内 ${tables.length} 个交易日，共 ${total} 条`,
+    columns,
+    rows,
+    multiDay: true,
+  };
 }
 
 function parseOutput(stdout) {
