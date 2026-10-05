@@ -46,8 +46,13 @@ async function withAiRouter(overrides, run) {
     destroy: async () => 0,
     ...overrides.message,
   };
+  const realService = require("../services/aiService");
   const service = {
-    consumeAIStream: require("../services/aiService").consumeAIStream,
+    consumeAIStream: realService.consumeAIStream,
+    // 健康度是纯内存逻辑，直接复用真实实现；只 stub 会打网络的建连部分。
+    recordModelResolution: realService.recordModelResolution,
+    rankModelsByHealth: realService.rankModelsByHealth,
+    modelHealthSnapshot: realService.modelHealthSnapshot,
     createAIUpstreamRequest: async () => ({
       response: new Response(
         'data: {"model":"backup/model:free"}\n\n' +

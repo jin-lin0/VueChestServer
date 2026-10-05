@@ -10,6 +10,8 @@ const {
   createAIUpstreamRequest,
   consumeAIStream,
   recordModelResolution,
+  rankModelsByHealth,
+  modelHealthSnapshot,
 } = require("../services/aiService");
 
 const DEFAULT_MAX_TOKENS = 4096;
@@ -17,7 +19,21 @@ const DEFAULT_TEMPERATURE = 0.7;
 
 router.get("/providers", async (req, res) => {
   const providers = await getConfiguredProviders();
-  res.json({ success: true, data: providers });
+  // 最近失败或被上游换过的模型沉到末尾并标记，避免用户反复选中同一个坏模型。
+  const now = Date.now();
+  const demoted = new Set(
+    modelHealthSnapshot(now).map((entry) => String(entry.modelId)),
+  );
+  res.json({
+    success: true,
+    data: providers.map((provider) => ({
+      ...provider,
+      models: rankModelsByHealth(provider.models, now).map((item) => ({
+        ...item,
+        demoted: demoted.has(String(item.id)),
+      })),
+    })),
+  });
 });
 
 /**
@@ -243,6 +259,8 @@ router.post("/chat", authMiddleware, async (req, res) => {
       signal: upstreamController.signal,
       onModelResolved: (actualModel) => {
         resolvedModel = actualModel;
+        // 上游解析出的模型与请求的不一致，说明请求的模型当前不可用，记一次降级。
+        recordModelResolution(model, actualModel);
         if (actualModel !== announcedModel) {
           announcedModel = actualModel;
           writePayload({ model: actualModel });

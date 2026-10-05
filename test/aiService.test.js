@@ -6,6 +6,11 @@ const {
   chunkText,
   consumeAIStream,
   parseJsonContent,
+  resetModelHealth,
+  recordModelFailure,
+  recordModelResolution,
+  rankModelsByHealth,
+  modelHealthSnapshot,
 } = require("../services/aiService");
 
 test("classifies actionable upstream errors", () => {
@@ -90,6 +95,32 @@ test("temporarily demotes models that recently failed or fell back", () => {
     rankModelsByHealth(models, 4000).map((item) => item.id),
     ["third", "first", "second"],
   );
+  resetModelHealth();
+});
+
+test("model health demotion expires after its TTL", () => {
+  resetModelHealth();
+  const models = [{ id: "first" }, { id: "second" }];
+  recordModelFailure("first", "RATE_LIMIT", 1000);
+  assert.deepEqual(
+    rankModelsByHealth(models, 2000).map((item) => item.id),
+    ["second", "first"],
+  );
+  // 超过降级窗口后自动恢复原有顺序，不需要额外清理。
+  assert.deepEqual(
+    rankModelsByHealth(models, 1000 + 60_000).map((item) => item.id),
+    ["first", "second"],
+  );
+  assert.deepEqual(modelHealthSnapshot(1000 + 60_000), []);
+  resetModelHealth();
+});
+
+test("model health ignores identical or missing model ids", () => {
+  resetModelHealth();
+  recordModelResolution("same", "same", 1000);
+  recordModelResolution("", "other", 1000);
+  recordModelResolution("requested", "", 1000);
+  assert.deepEqual(modelHealthSnapshot(2000), []);
   resetModelHealth();
 });
 

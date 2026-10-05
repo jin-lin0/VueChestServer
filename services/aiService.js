@@ -54,6 +54,76 @@ function extractUpstreamMessage(payload, fallback) {
 }
 
 /**
+ * 模型健康度（软熔断）。
+ *
+ * 目的：把「刚刚失败过」或「被上游静默换成别的模型」的模型临时降级，
+ * 排序时沉到列表末尾，避免短时间内反复打到同一个坏模型上。
+ *
+ * 只存在进程内存：这属于限流/熔断类软状态，多实例各算各的即可，
+ * 冷启动丢失只会让降级提前失效，不会造成正确性问题，因此不落库。
+ */
+const MODEL_HEALTH_TTL_MS = 60_000;
+const modelHealth = new Map();
+
+function resetModelHealth() {
+  modelHealth.clear();
+}
+
+function isModelDemoted(entry, now) {
+  return Boolean(entry) && now - entry.at < MODEL_HEALTH_TTL_MS;
+}
+
+function recordModelFailure(modelId, code, now = Date.now()) {
+  if (!modelId) return;
+  modelHealth.set(String(modelId), {
+    at: now,
+    code: code || "UPSTREAM_ERROR",
+  });
+}
+
+/**
+ * 上游把请求解析成了另一个模型（例如 OpenRouter 的 free router 兜底），
+ * 说明「被请求的那个模型」当前不可用：按失败记账，避免继续优先选它。
+ */
+function recordModelResolution(requestedId, resolvedId, now = Date.now()) {
+  if (!requestedId || !resolvedId) return;
+  if (String(requestedId) === String(resolvedId)) return;
+  recordModelFailure(requestedId, "MODEL_FALLBACK", now);
+}
+
+/**
+ * 稳定排序：未降级的模型保持原有相对顺序，降级过的按失败时间升序排在后面
+ * （越早失败的越靠前，即越优先被重试）。
+ */
+function rankModelsByHealth(models, now = Date.now()) {
+  const list = Array.isArray(models) ? models : [];
+  const healthy = [];
+  const demoted = [];
+  for (const item of list) {
+    const entry = modelHealth.get(String(item?.id));
+    if (isModelDemoted(entry, now)) demoted.push({ item, at: entry.at });
+    else healthy.push(item);
+  }
+  demoted.sort((left, right) => left.at - right.at);
+  return [...healthy, ...demoted.map((entry) => entry.item)];
+}
+
+/** 当前处于降级窗口内的模型快照，供 /providers 标记与排查使用。 */
+function modelHealthSnapshot(now = Date.now()) {
+  const snapshot = [];
+  for (const [modelId, entry] of modelHealth) {
+    if (!isModelDemoted(entry, now)) continue;
+    snapshot.push({
+      modelId,
+      code: entry.code,
+      failedAt: entry.at,
+      retryAfterMs: MODEL_HEALTH_TTL_MS - (now - entry.at),
+    });
+  }
+  return snapshot.sort((left, right) => left.failedAt - right.failedAt);
+}
+
+/**
  * 非流式响应的读体超时兜底：建连超时不再覆盖 body 读取，
  * 用整体读体上限防止慢滴流式服务器把请求无限挂起。
  */
@@ -317,4 +387,9 @@ module.exports = {
   completeAI,
   consumeAIStream,
   streamAI,
+  resetModelHealth,
+  recordModelFailure,
+  recordModelResolution,
+  rankModelsByHealth,
+  modelHealthSnapshot,
 };
