@@ -4,6 +4,7 @@ const MarketApp = require("../models/marketApp");
 const MarketAppVersion = require("../models/marketAppVersion");
 const MarketAppVersionReview = require("../models/marketAppVersionReview");
 const AppReport = require("../models/appReport");
+const AppComment = require("../models/appComment");
 const { authMiddleware, optionalAuth } = require("../middleware/auth");
 const { adminOnly, isAdmin } = require("../middleware/superAdmin");
 const { publicUrl, headObject, deleteObject } = require("../utils/r2");
@@ -11,6 +12,7 @@ const {
   normalizeSha256,
   assertObjectIntegrity,
 } = require("../utils/bundleIntegrity");
+const { parsePermissions, serializePermissions } = require("../utils/permissions");
 const {
   VERSION_RE,
   approveVersion,
@@ -38,6 +40,67 @@ router.get("/categories", async (req, res) => {
     .filter((r) => r.category)
     .map((r) => ({ name: r.category, count: Number(r.count) }));
   res.json({ success: true, data });
+});
+
+// 热门榜：按下载量排序的已上架应用，附带评分聚合（仅统计有打分的可见评论）
+router.get("/ranking", async (req, res) => {
+  const limitNum = Math.min(30, Math.max(1, parseInt(req.query.limit) || 10));
+  const apps = await MarketApp.findAll({
+    where: { status: "approved", isListed: true },
+    attributes: [
+      "id",
+      "name",
+      "icon",
+      "description",
+      "category",
+      "version",
+      "downloads",
+      "isOfficial",
+    ],
+    order: [
+      ["downloads", "DESC"],
+      ["updatedAt", "DESC"],
+    ],
+    limit: limitNum,
+  });
+
+  const ids = apps.map((app) => app.id);
+  const ratingRows = ids.length
+    ? await AppComment.findAll({
+        attributes: [
+          "appId",
+          [fn("AVG", col("rating")), "average"],
+          [fn("COUNT", col("rating")), "count"],
+        ],
+        where: {
+          appId: { [Op.in]: ids },
+          status: "visible",
+          rating: { [Op.ne]: null },
+        },
+        group: ["appId"],
+        raw: true,
+      })
+    : [];
+  const ratingMap = new Map(
+    ratingRows.map((row) => [
+      Number(row.appId),
+      {
+        average: row.average == null ? null : Number(Number(row.average).toFixed(1)),
+        count: Number(row.count) || 0,
+      },
+    ]),
+  );
+
+  res.json({
+    success: true,
+    data: {
+      items: apps.map((app) => {
+        const data = app.toJSON();
+        data.rating = ratingMap.get(app.id) || { average: null, count: 0 };
+        return data;
+      }),
+    },
+  });
 });
 
 // 获取应用列表（公开市场只返回已通过的应用）
@@ -77,6 +140,7 @@ router.get("/apps", optionalAuth, async (req, res) => {
     "downloads",
     "status",
     "allowNetwork",
+    "permissions",
     "sha256",
     "createdAt",
     "updatedAt",
@@ -96,6 +160,7 @@ router.get("/apps", optionalAuth, async (req, res) => {
       items: rows.map((r) => {
         const d = r.toJSON();
         d.allowNetwork = parseAllowNetwork(d.allowNetwork);
+        d.permissions = parsePermissions(d.permissions);
         return d;
       }),
       total: count,
@@ -129,6 +194,7 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
       "fileUrl",
       "uploadedBy",
       "allowNetwork",
+      "permissions",
       "sha256",
       "createdAt",
       "updatedAt",
@@ -147,6 +213,7 @@ router.get("/apps/:id", optionalAuth, async (req, res) => {
 
   const data = app.toJSON();
   data.allowNetwork = parseAllowNetwork(data.allowNetwork);
+  data.permissions = parsePermissions(data.permissions);
   if (data.screenshots) {
     try {
       data.screenshots = JSON.parse(data.screenshots);
@@ -177,6 +244,7 @@ router.get("/apps/:id/versions", optionalAuth, async (req, res) => {
       "size",
       "releaseNotes",
       "allowNetwork",
+      "permissions",
       "sha256",
       "status",
       "reviewStatus",
@@ -194,6 +262,7 @@ router.get("/apps/:id/versions", optionalAuth, async (req, res) => {
     data: versions.map((version) => {
       const data = version.toJSON();
       data.allowNetwork = parseAllowNetwork(data.allowNetwork);
+      data.permissions = parsePermissions(data.permissions);
       return data;
     }),
   });
@@ -225,6 +294,7 @@ router.get("/apps/:id/versions/:versionId/download", async (req, res) => {
       version: version.version,
       fileUrl: version.fileUrl || publicUrl(version.fileKey),
       allowNetwork: parseAllowNetwork(version.allowNetwork),
+      permissions: parsePermissions(version.permissions),
       sha256: version.sha256 || null,
     },
   });
@@ -269,6 +339,7 @@ router.put(
         size: fallback.size,
         releaseNotes: fallback.releaseNotes || "",
         allowNetwork: fallback.allowNetwork || "[]",
+        permissions: fallback.permissions || "[]",
         sha256: fallback.sha256 || null,
       });
     }
@@ -288,6 +359,7 @@ router.get("/apps/:id/download", async (req, res) => {
       "version",
       "status",
       "allowNetwork",
+      "permissions",
       "sha256",
     ],
   });
@@ -314,6 +386,7 @@ router.get("/apps/:id/download", async (req, res) => {
       version: app.version,
       fileUrl,
       allowNetwork: parseAllowNetwork(app.allowNetwork),
+      permissions: parsePermissions(app.permissions),
       sha256: app.sha256 || null,
     },
   });
@@ -333,6 +406,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
     readme,
     releaseNotes,
     allowNetwork,
+    permissions,
     sha256,
   } = req.body;
 
@@ -399,6 +473,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
       readme: readme || existing.readme || "",
       releaseNotes: releaseNotes || "",
       allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
+      permissions: serializePermissions(permissions),
       sha256: verifiedSha256,
       status: isAdmin(req.user) ? "approved" : existing.status,
     });
@@ -429,6 +504,7 @@ router.post("/apps", authMiddleware, async (req, res) => {
     readme: readme || "",
     releaseNotes: releaseNotes || "",
     allowNetwork: JSON.stringify(parseAllowNetwork(allowNetwork)),
+    permissions: serializePermissions(permissions),
     sha256: verifiedSha256,
     uploadedBy: req.user.id,
     status: isAdmin(req.user) ? "approved" : "pending",
@@ -668,6 +744,7 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
     releaseNotes,
     status,
     allowNetwork,
+    permissions,
     isOfficial,
     sha256,
   } = req.body;
@@ -693,6 +770,8 @@ router.put("/apps/:id", authMiddleware, adminOnly, async (req, res) => {
   if (status !== undefined) updateData.status = status;
   if (allowNetwork !== undefined)
     updateData.allowNetwork = JSON.stringify(parseAllowNetwork(allowNetwork));
+  if (permissions !== undefined)
+    updateData.permissions = serializePermissions(permissions);
   if (isOfficial !== undefined) updateData.isOfficial = !!isOfficial;
 
   if (fileKey !== undefined) {

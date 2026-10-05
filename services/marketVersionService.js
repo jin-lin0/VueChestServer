@@ -3,6 +3,7 @@ const MarketAppVersionReview = require("../models/marketAppVersionReview");
 const { isAdmin } = require("../middleware/superAdmin");
 const { publicUrl } = require("../utils/r2");
 const { normalizeSha256 } = require("../utils/bundleIntegrity");
+const { serializePermissions } = require("../utils/permissions");
 
 const VERSION_RE =
   /^v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -91,6 +92,7 @@ async function recordVersion(app, publishedBy, reviewStatus = "approved") {
     size: app.size,
     releaseNotes: app.releaseNotes || "",
     allowNetwork: app.allowNetwork || "[]",
+    permissions: app.permissions || "[]",
     sha256: app.sha256 || null,
     metadata: versionMetadata(app),
     publishedBy: publishedBy || app.uploadedBy,
@@ -137,6 +139,7 @@ async function createPendingVersion(app, payload, userId, fileSize) {
     size: fileSize,
     releaseNotes: payload.releaseNotes || "",
     allowNetwork: JSON.stringify(parseAllowNetwork(payload.allowNetwork)),
+    permissions: serializePermissions(payload.permissions),
     sha256: normalizeSha256(payload.sha256, true),
     metadata: versionMetadata(app, {
       name: payload.name,
@@ -185,6 +188,7 @@ async function approveVersion(app, version, reviewerId, feedback = {}) {
     size: version.size,
     releaseNotes: version.releaseNotes || "",
     allowNetwork: version.allowNetwork || "[]",
+    permissions: version.permissions || "[]",
     sha256: version.sha256 || null,
     status: "approved",
     isListed: true,

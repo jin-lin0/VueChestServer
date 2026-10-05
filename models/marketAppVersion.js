@@ -37,6 +37,11 @@ const MarketAppVersion = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    // 该版本声明的能力权限（JSON 数组），随版本一起审核与回溯。
+    permissions: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
     sha256: {
       type: DataTypes.STRING(64),
       allowNull: true,

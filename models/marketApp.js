@@ -85,6 +85,12 @@ const MarketApp = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    // 应用声明的能力权限（JSON 数组，如 ["notify","cloud","ai"]）。
+    // 沙箱默认不授予任何能力；仅在声明且用户安装时确认后才放行（见 utils/permissions.js）。
+    permissions: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
     sha256: {
       type: DataTypes.STRING(64),
       allowNull: true,
