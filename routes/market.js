@@ -22,6 +22,8 @@ const {
   recordVersion,
   reviewFeedback,
 } = require("../services/marketVersionService");
+const { safeNotify } = require("../services/notificationService");
+const { notifyReviewResult } = require("../services/marketNotifications");
 
 const router = express.Router();
 // 获取分类列表（只统计已通过的应用，单次 GROUP BY 查询，避免 N+1）
@@ -474,12 +476,23 @@ router.post(
     const version = await MarketAppVersion.findOne({
       where: { appId: app.id, version: app.version },
     });
-    if (version)
-      await approveVersion(app, version, req.user.id, reviewFeedback(req.body));
+    const feedback = reviewFeedback(req.body);
+    if (version) await approveVersion(app, version, req.user.id, feedback);
     else {
       await app.update({ status: "approved", isListed: true });
       await recordVersion(app, req.user.id, "approved");
     }
+
+    await safeNotify(
+      notifyReviewResult({
+        app,
+        version,
+        approved: true,
+        category: feedback.category,
+        note: feedback.message,
+        actorId: req.user.id,
+      }),
+    );
 
     res.json({
       success: true,
@@ -513,6 +526,17 @@ router.post("/apps/:id/reject", authMiddleware, adminOnly, async (req, res) => {
     });
     await recordReview(version, req.user.id, "rejected", feedback);
   }
+
+  await safeNotify(
+    notifyReviewResult({
+      app,
+      version: versions.length === 1 ? versions[0] : null,
+      approved: false,
+      category: feedback.category,
+      note: feedback.message,
+      actorId: req.user.id,
+    }),
+  );
 
   res.json({
     success: true,
@@ -569,7 +593,18 @@ router.post(
         error: `线上版本已是 v${app.version}，不能批准较低或相同版本`,
       });
     }
-    await approveVersion(app, version, req.user.id, reviewFeedback(req.body));
+    const approvedFeedback = reviewFeedback(req.body);
+    await approveVersion(app, version, req.user.id, approvedFeedback);
+    await safeNotify(
+      notifyReviewResult({
+        app,
+        version,
+        approved: true,
+        category: approvedFeedback.category,
+        note: approvedFeedback.message,
+        actorId: req.user.id,
+      }),
+    );
     res.json({ success: true, message: `v${version.version} 已通过审核` });
   },
 );
@@ -599,6 +634,16 @@ router.post(
     });
     await recordReview(version, req.user.id, "rejected", feedback);
     if (app.status === "pending") await app.update({ status: "rejected" });
+    await safeNotify(
+      notifyReviewResult({
+        app,
+        version,
+        approved: false,
+        category: feedback.category,
+        note: feedback.message,
+        actorId: req.user.id,
+      }),
+    );
     res.json({ success: true, message: `v${version.version} 已拒绝` });
   },
 );

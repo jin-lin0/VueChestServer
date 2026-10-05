@@ -5,6 +5,8 @@ const MarketApp = require("../models/marketApp");
 const User = require("../models/user");
 const { authMiddleware, optionalAuth } = require("../middleware/auth");
 const { isAdmin } = require("../middleware/superAdmin");
+const { safeNotify } = require("../services/notificationService");
+const { notifyNewComment } = require("../services/marketNotifications");
 
 const router = express.Router();
 
@@ -76,7 +78,9 @@ router.post("/apps/:id/comments", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "评分需在 1-5 之间" });
   }
 
-  const app = await MarketApp.findByPk(appId, { attributes: ["id", "status"] });
+  const app = await MarketApp.findByPk(appId, {
+    attributes: ["id", "name", "status", "uploadedBy"],
+  });
   if (!app || app.status !== "approved") {
     return res.status(404).json({ error: "应用不存在" });
   }
@@ -107,6 +111,11 @@ router.post("/apps/:id/comments", authMiddleware, async (req, res) => {
   });
   const out = withAuthor.toJSON();
   out.canDelete = true; // 刚创建的评论作者本人必可删
+
+  // 通知应用作者（顶层评论）或被回复者（楼中楼）；自己操作自己不发。
+  await safeNotify(
+    notifyNewComment({ app, comment: out, parent, actor: req.user }),
+  );
 
   res.status(201).json({ success: true, data: out });
 });

@@ -101,6 +101,10 @@ app.use("/api/workspace-templates", workspaceTemplatesRouter);
 const developerRouter = require("./routes/developer");
 app.use("/api/developer", developerRouter);
 
+// 站内通知（需登录，只能读写自己的通知；不涉及浏览器推送）
+const notificationsRouter = require("./routes/notifications");
+app.use("/api/notifications", notificationsRouter);
+
 // A 股研究数据：免密上游聚合（大盘、估值、财务与公告）
 const stockResearchRouter = require("./routes/stockResearch");
 app.use("/api/research-stocks", stockResearchRouter);

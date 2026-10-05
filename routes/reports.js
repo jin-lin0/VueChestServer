@@ -5,6 +5,11 @@ const MarketApp = require("../models/marketApp");
 const User = require("../models/user");
 const { authMiddleware } = require("../middleware/auth");
 const { adminOnly } = require("../middleware/superAdmin");
+const { safeNotify } = require("../services/notificationService");
+const {
+  notifyNewReport,
+  notifyReportResolved,
+} = require("../services/marketNotifications");
 
 const router = express.Router();
 const REPORT_REASONS = new Set([
@@ -43,6 +48,9 @@ router.post("/apps/:id/reports", authMiddleware, async (req, res) => {
     reason,
     details,
   });
+
+  await safeNotify(notifyNewReport({ app, report, actor: req.user }));
+
   res.status(201).json({
     success: true,
     data: { id: report.id, status: report.status, createdAt: report.createdAt },
@@ -108,6 +116,19 @@ router.put(
       reviewedBy: req.user.id,
       reviewedAt: new Date(),
     });
+
+    const app = await MarketApp.findByPk(report.appId, {
+      attributes: ["id", "name"],
+    });
+    await safeNotify(
+      notifyReportResolved({
+        app,
+        report,
+        status,
+        actorId: req.user.id,
+      }),
+    );
+
     res.json({ success: true, data: report });
   },
 );
