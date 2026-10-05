@@ -25,6 +25,15 @@ function getClient() {
       accessKeyId: R2_ACCESS_KEY_ID,
       secretAccessKey: R2_SECRET_ACCESS_KEY,
     },
+    // AWS SDK v3 自 3.729 起默认给请求附加校验和，预签名 PUT 会被写进
+    // `x-amz-checksum-crc32=AAAAAA==`（**空 body** 的 CRC32，因为签名时还不知道
+    // 真实内容），同时把 `x-amz-meta-*` 从签名头挪到查询参数里。后果是：
+    //   · 客户端把 x-amz-meta-sha256 当请求头发出 → 规范化请求与签名不一致
+    //     → R2 返回 SignatureDoesNotMatch（应用包上传 403，就是这个问题）；
+    //   · 客户端不发该头 → 对象拿不到 sha256 元数据 → /complete 的完整性校验必然失败。
+    // 两个默认值都关掉，让元数据回到「签进签名头、由客户端发送」的正常形态。
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED",
   });
   return client;
 }
@@ -40,7 +49,17 @@ async function createUploadUrl(key, contentType, metadata) {
     ContentType: contentType,
     ...(metadata ? { Metadata: metadata } : {}),
   });
-  return getSignedUrl(getClient(), command, { expiresIn: 600 });
+  // 把 x-amz-meta-* 钉在签名头里（与上面 S3Client 的说明配套），
+  // 否则 presigner 会把它们提升为查询参数，客户端再发送同名请求头就会签名不匹配。
+  const metadataHeaders = metadata
+    ? Object.keys(metadata).map((name) => `x-amz-meta-${name}`)
+    : [];
+  return getSignedUrl(getClient(), command, {
+    expiresIn: 600,
+    ...(metadataHeaders.length
+      ? { unhoistableHeaders: new Set(metadataHeaders) }
+      : {}),
+  });
 }
 
 async function headObject(key) {
