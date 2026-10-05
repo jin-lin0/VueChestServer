@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Server for AI chat projects",
   "main": "index.js",
+  "packageManager": "pnpm@10.14.0",
   "engines": {
     "node": ">=20"
   },
@@ -11,6 +12,7 @@
     "dev": "nodemon index.js",
     "test": "node --test",
     "test:platform": "node scripts/integration-platform.js",
+    "schema:check": "node scripts/schema-check.js",
     "reset:market": "node scripts/reset-market-apps.js"
   },
   "dependencies": {

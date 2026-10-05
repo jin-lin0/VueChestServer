@@ -121,8 +121,10 @@ app.use("/api/research-stocks", stockResearchRouter);
 const westockRouter = require("./routes/westock");
 app.use("/api/westock", westockRouter);
 
-// 同步数据库模型（Vercel 环境跳过 sync 以加速冷启动）
+// 同步数据库模型（Vercel 环境跳过，避免多实例冷启动同时抢连接阻塞业务请求）
 if (!process.env.VERCEL) {
+  // sync() 只做 `CREATE TABLE IF NOT EXISTS`：让模型里声明过的表存在。
+  // 它**不会 ALTER 已存在的表** —— 给已有表加列 / 加索引必须手动执行 DDL。
   sequelize
     .sync()
     .then(() => {
@@ -135,9 +137,7 @@ if (!process.env.VERCEL) {
       console.error("Unable to sync database:", err);
     });
 } else {
-  // Vercel 请求链路禁止执行 schema sync/alter。数据库迁移必须在部署前独立完成，
-  // 避免多实例冷启动同时占用连接并阻塞全部业务请求。
-  console.log("Vercel runtime: schema migration skipped");
+  console.log("Vercel runtime: schema sync skipped");
 }
 
 // 全局错误处理中间件（兜底所有未捕获的异常，统一错误响应格式）

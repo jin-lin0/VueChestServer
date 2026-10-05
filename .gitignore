@@ -2,3 +2,11 @@
 node_modules/
 .DS_Store
 *.log
+
+# 本项目统一用 pnpm（见 package.json 的 packageManager），不用 npm
+package-lock.json
+
+# pnpm install 被中断时可能留下的临时残骸：_tmp_<pid>_<hex>
+_tmp_*
+
+.workbuddy-ai
