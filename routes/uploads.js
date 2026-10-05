@@ -19,6 +19,8 @@ const limits = {
   avatar: 2 * 1024 * 1024,
   app: 10 * 1024 * 1024,
   screenshot: 5 * 1024 * 1024,
+  // 市场应用通过沙箱 files.upload 上传的附件（图片 / 文档 / 压缩包等）
+  appfile: 4 * 1024 * 1024,
 };
 const types = {
   avatar: new Set(["image/jpeg", "image/png", "image/webp"]),
@@ -28,7 +30,44 @@ const types = {
     "application/x-javascript",
   ]),
   screenshot: new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]),
+  appfile: new Set([
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/svg+xml",
+    "application/pdf",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/json",
+    "application/zip",
+    "application/octet-stream",
+  ]),
 };
+
+const EXT_BY_TYPE = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/svg+xml": "svg",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/csv": "csv",
+  "application/json": "json",
+  "application/zip": "zip",
+  "application/octet-stream": "bin",
+};
+
+function extensionFor(kind, contentType) {
+  if (kind === "app") return "js";
+  return (
+    EXT_BY_TYPE[contentType] ||
+    (contentType.split("/")[1] || "bin").replace("jpeg", "jpg")
+  );
+}
 
 router.post("/presign", authMiddleware, async (req, res) => {
   const { kind, contentType, size, name } = req.body;
@@ -44,17 +83,34 @@ router.post("/presign", authMiddleware, async (req, res) => {
       .json({ error: "文件类型或大小不符合要求", code: "VALIDATION_ERROR" });
   }
 
-  const extension =
-    kind === "app" ? "js" : contentType.split("/")[1].replace("jpeg", "jpg");
+  const extension = extensionFor(kind, contentType);
   const readableName = slugify(
     name,
-    kind === "avatar" ? "avatar" : kind === "screenshot" ? "screenshot" : "app",
+    kind === "avatar"
+      ? "avatar"
+      : kind === "screenshot"
+        ? "screenshot"
+        : kind === "appfile"
+          ? "file"
+          : "app",
   );
   // app 用稳定 key（apps/<userId>/<slug>.js）覆盖式更新，避免每次随机后缀在 R2 堆积；
-  // 头像/截图仍加随机后缀，防止不同文件互相覆盖。
+  // 头像/截图/应用附件仍加随机后缀，防止不同文件互相覆盖。
   const suffix =
     kind === "app" && name ? "" : `-${crypto.randomUUID().slice(0, 8)}`;
-  const key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${readableName}${suffix}.${extension}`;
+  let key;
+  if (kind === "appfile") {
+    // 应用附件按 <userId>/<appId> 分层，既保证归属校验，也便于按应用清理。
+    const appId = Number.parseInt(req.body.appId, 10);
+    if (!Number.isInteger(appId) || appId <= 0) {
+      return res
+        .status(400)
+        .json({ error: "缺少有效的应用 ID", code: "VALIDATION_ERROR" });
+    }
+    key = `appfiles/${req.user.id}/${appId}/${readableName}${suffix}.${extension}`;
+  } else {
+    key = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/${readableName}${suffix}.${extension}`;
+  }
   const sha256 = kind === "app" ? normalizeSha256(req.body.sha256, true) : null;
   const uploadUrl = await createUploadUrl(
     key,
@@ -75,7 +131,10 @@ router.post("/presign", authMiddleware, async (req, res) => {
 
 router.post("/complete", authMiddleware, async (req, res) => {
   const { kind, key } = req.body;
-  const prefix = `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/`;
+  const prefix =
+    kind === "appfile"
+      ? `appfiles/${req.user.id}/`
+      : `${kind === "avatar" ? "avatars" : "apps"}/${req.user.id}/`;
   if (!limits[kind] || typeof key !== "string" || !key.startsWith(prefix)) {
     return res
       .status(400)

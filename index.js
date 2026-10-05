@@ -91,6 +91,14 @@ app.use("/api/uploads", uploadsRouter);
 const aiChatRouter = require("./routes/aiChat");
 app.use("/api/ai-chat", aiChatRouter);
 
+// 市场应用云端键值存储（需登录，按 userId + appId 隔离）
+const appDataRouter = require("./routes/appData");
+app.use("/api/app-data", appDataRouter);
+
+// 市场应用受控 AI 代理（需登录，要求应用已声明 ai 能力权限）
+const appAiRouter = require("./routes/appAi");
+app.use("/api/app-ai", appAiRouter);
+
 // 音乐收藏分组路由（需登录）
 const musicFavoritesRouter = require("./routes/musicFavorites");
 app.use("/api/music-favorites", musicFavoritesRouter);
