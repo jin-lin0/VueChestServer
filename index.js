@@ -113,7 +113,7 @@ app.use("/api/developer", developerRouter);
 const notificationsRouter = require("./routes/notifications");
 app.use("/api/notifications", notificationsRouter);
 
-// A 股研究数据：免密上游聚合（大盘、估值、财务与公告）
+// 腾讯 A 股行情：大盘、估值摘要与前复权 K 线
 const stockResearchRouter = require("./routes/stockResearch");
 app.use("/api/research-stocks", stockResearchRouter);
 

@@ -4,12 +4,12 @@ const router = express.Router();
 
 const REQUEST_TIMEOUT_MS = 10000;
 const cache = new Map();
+const inFlight = new Map();
+const MAX_CACHE_ENTRIES = 256;
 
 const CACHE_TTL = {
   market: 30 * 1000,
   quote: 60 * 1000,
-  financials: 30 * 60 * 1000,
-  notices: 10 * 60 * 1000,
   kline: 5 * 60 * 1000,
 };
 
@@ -30,24 +30,21 @@ function marketFor(code) {
   return code.startsWith("6") || code.startsWith("688") ? "SH" : "SZ";
 }
 
-function secIdFor(code) {
-  return `${marketFor(code) === "SH" ? 1 : 0}.${code}`;
-}
-
 function finite(value, divisor = 1) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !value.trim()) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number / divisor : null;
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         Accept: "application/json,text/plain,*/*",
-        Referer: "https://quote.eastmoney.com/",
         "User-Agent": "Mozilla/5.0 VueChest/1.0",
       },
     });
@@ -59,16 +56,32 @@ async function fetchJson(url) {
 }
 
 async function cached(key, ttl, loader) {
+  const now = Date.now();
+  for (const [entryKey, entry] of cache) {
+    if (entry.expiresAt <= now) cache.delete(entryKey);
+  }
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.savedAt < ttl) return hit.value;
-  const value = await loader();
-  cache.set(key, { savedAt: Date.now(), value });
-  return value;
+  if (hit) return hit.value;
+  if (inFlight.has(key)) return inFlight.get(key);
+  const pending = (async () => {
+    const value = await loader();
+    if (cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+    cache.set(key, { expiresAt: Date.now() + ttl, value });
+    return value;
+  })();
+  inFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    inFlight.delete(key);
+  }
 }
 
 async function fetchTencentSummary(code) {
   const symbol = `${marketFor(code).toLowerCase()}${code}`;
-  const response = await fetch(`http://qt.gtimg.cn/q=${symbol}`);
+  const response = await fetch(`https://qt.gtimg.cn/q=${symbol}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   if (!response.ok) throw new Error(`腾讯行情返回 ${response.status}`);
   const text = new TextDecoder("gbk").decode(await response.arrayBuffer());
   const match = text.match(/="([^"]+)"/);
@@ -76,6 +89,9 @@ async function fetchTencentSummary(code) {
   if (fields.length < 50) throw new Error("未找到股票行情摘要");
   return {
     code,
+    source: "tencent",
+    asOf: /^\d{14}$/.test(fields[30] || "") ? fields[30] : null,
+    fetchedAt: Date.now(),
     name: fields[1] || code,
     price: finite(fields[3]),
     high: finite(fields[33]),
@@ -96,23 +112,45 @@ async function fetchTencentSummary(code) {
   };
 }
 
+const MARKET_INDICES = [
+  { symbol: "sh000001", code: "000001", name: "上证指数" },
+  { symbol: "sz399001", code: "399001", name: "深证成指" },
+  { symbol: "sz399006", code: "399006", name: "创业板指" },
+];
+
+async function fetchTencentIndices() {
+  const symbols = MARKET_INDICES.map((item) => item.symbol).join(",");
+  const response = await fetch(`https://qt.gtimg.cn/q=${symbols}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`腾讯指数行情返回 ${response.status}`);
+  const text = new TextDecoder("gbk").decode(await response.arrayBuffer());
+  const quotes = new Map(
+    [...text.matchAll(/v_([a-z]{2}\d{6})="([^"]*)"/g)].map((match) => [
+      match[1],
+      match[2].split("~"),
+    ]),
+  );
+  const rows = MARKET_INDICES.map((meta) => {
+    const fields = quotes.get(meta.symbol) || [];
+    const price = finite(fields[3]);
+    if (price === null || price <= 0) return null;
+    return {
+      code: meta.code,
+      name: fields[1] || meta.name,
+      price,
+      change: finite(fields[31]),
+      changePercent: finite(fields[32]),
+    };
+  }).filter(Boolean);
+  if (!rows.length) throw new Error("未找到指数行情");
+  return rows;
+}
+
 router.get("/market-overview", async (req, res, next) => {
   try {
-    const data = await cached("market-overview", CACHE_TTL.market, async () => {
-      const fields = "f2,f3,f4,f12,f13,f14";
-      const secids = "1.000001,0.399001,0.399006";
-      const payload = await fetchJson(
-        `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=${secids}&fields=${fields}`,
-      );
-      return (payload?.data?.diff || []).map((item) => ({
-        code: String(item.f12 || ""),
-        name: String(item.f14 || "指数"),
-        price: finite(item.f2),
-        change: finite(item.f4),
-        changePercent: finite(item.f3),
-      }));
-    });
-    res.json({ success: true, data, source: "eastmoney" });
+    const data = await cached("market-overview", CACHE_TTL.market, fetchTencentIndices);
+    res.json({ success: true, data, source: "tencent" });
   } catch (error) {
     next(error);
   }
@@ -121,136 +159,8 @@ router.get("/market-overview", async (req, res, next) => {
 router.get("/:code/summary", async (req, res, next) => {
   try {
     const code = validateCode(req.params.code);
-    const data = await cached(`summary:${code}`, CACHE_TTL.quote, async () => {
-      const fields = [
-        "f43",
-        "f44",
-        "f45",
-        "f46",
-        "f47",
-        "f48",
-        "f49",
-        "f50",
-        "f57",
-        "f58",
-        "f60",
-        "f116",
-        "f117",
-        "f162",
-        "f167",
-        "f168",
-        "f170",
-        "f171",
-      ].join(",");
-      try {
-        const payload = await fetchJson(
-          `https://push2.eastmoney.com/api/qt/stock/get?secid=${secIdFor(code)}&fields=${fields}`,
-        );
-        const item = payload?.data;
-        if (!item) throw new Error("未找到股票研究摘要");
-        return {
-          code,
-          name: String(item.f58 || code),
-          price: finite(item.f43, 100),
-          high: finite(item.f44, 100),
-          low: finite(item.f45, 100),
-          open: finite(item.f46, 100),
-          previousClose: finite(item.f60, 100),
-          volume: finite(item.f47),
-          amount: finite(item.f48),
-          outerVolume: finite(item.f49),
-          volumeRatio: finite(item.f50, 100),
-          totalMarketCap: finite(item.f116),
-          floatMarketCap: finite(item.f117),
-          pe: finite(item.f162, 100),
-          pb: finite(item.f167, 100),
-          turnover: finite(item.f168, 100),
-          changePercent: finite(item.f170, 100),
-          amplitude: finite(item.f171, 100),
-        };
-      } catch {
-        return fetchTencentSummary(code);
-      }
-    });
-    res.json({ success: true, data, source: "eastmoney" });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.get("/:code/financials", async (req, res, next) => {
-  try {
-    const code = validateCode(req.params.code);
-    const data = await cached(
-      `financials:${code}`,
-      CACHE_TTL.financials,
-      async () => {
-        const symbol = `${marketFor(code)}${code}`;
-        const payload = await fetchJson(
-          `https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis/ZYZBAjaxNew?type=0&code=${symbol}`,
-        );
-        return (payload?.data || []).slice(0, 8).map((item) => ({
-          reportDate: String(item.REPORT_DATE || "").slice(0, 10),
-          reportName: String(
-            item.REPORT_DATE_NAME || item.REPORT_TYPE || "财报",
-          ),
-          revenue: finite(item.TOTALOPERATEREVE),
-          revenueGrowth: finite(item.TOTALOPERATEREVETZ),
-          netProfit: finite(item.PARENTNETPROFIT),
-          netProfitGrowth: finite(item.PARENTNETPROFITTZ),
-          eps: finite(item.EPSJB),
-          roe: finite(item.ROEJQ),
-          grossMargin: finite(item.XSMLL),
-          netMargin: finite(item.XSJLL),
-          debtRatio: finite(item.ZCFZL),
-          currentRatio: finite(item.LD),
-          cashflowPerShare: finite(item.MGJYXJJE),
-        }));
-      },
-    );
-    res.json({ success: true, data, source: "eastmoney" });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.get("/:code/notices", async (req, res, next) => {
-  try {
-    const code = validateCode(req.params.code);
-    const limit = Math.min(
-      20,
-      Math.max(1, Number.parseInt(req.query.limit, 10) || 10),
-    );
-    const data = await cached(
-      `notices:${code}:${limit}`,
-      CACHE_TTL.notices,
-      async () => {
-        const params = new URLSearchParams({
-          sr: "-1",
-          page_size: String(limit),
-          page_index: "1",
-          ann_type: "A",
-          client_source: "web",
-          stock_list: code,
-        });
-        const payload = await fetchJson(
-          `https://np-anotice-stock.eastmoney.com/api/security/ann?${params}`,
-        );
-        return (payload?.data?.list || []).map((item) => ({
-          id: String(item.art_code || ""),
-          title: String(item.title_ch || item.title || "公司公告"),
-          date: String(item.notice_date || item.display_time || "").slice(
-            0,
-            10,
-          ),
-          category: String(item.columns?.[0]?.column_name || "公告"),
-          url: item.art_code
-            ? `https://data.eastmoney.com/notices/detail/${code}/${item.art_code}.html`
-            : "",
-        }));
-      },
-    );
-    res.json({ success: true, data, source: "eastmoney" });
+    const data = await cached(`summary:${code}`, CACHE_TTL.quote, () => fetchTencentSummary(code));
+    res.json({ success: true, data, source: data.source, fetchedAt: data.fetchedAt });
   } catch (error) {
     next(error);
   }
@@ -268,20 +178,44 @@ router.get("/:code/kline", async (req, res, next) => {
     );
     const symbol = `${marketFor(code).toLowerCase()}${code}`;
     const data = await cached(
-      `kline:${code}:${period}:${count}`,
+      `kline:qfq:${code}:${period}:${count}`,
       CACHE_TTL.kline,
       async () => {
-        const payload = await fetchJson(
-          `https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param=${symbol},${period},,,${count},&qfq=1`,
-        );
-        const rows = payload?.data?.[symbol]?.[period];
-        if (!Array.isArray(rows) || rows.length === 0) {
-          throw new Error("未找到 K 线数据");
+        // fqkline caps one response at 640 bars, including requests for larger counts.
+        // All pages use the same current forward-adjustment basis.
+        const history = new Map();
+        const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+        let end = "";
+        while (history.size < count) {
+          const pageSize = Math.min(640, count - history.size);
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) throw new Error("K 线历史加载超时");
+          const payload = await fetchJson(
+            `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},${period},,${end},${pageSize},qfq`,
+            remainingMs,
+          );
+          const rows = payload?.data?.[symbol]?.[`qfq${period}`];
+          if (!Array.isArray(rows)) throw new Error("上游没有返回前复权 K 线数据");
+          if (!rows.length) break;
+          const before = history.size;
+          for (const row of rows) {
+            if (!Array.isArray(row) || !/^\d{4}-\d{2}-\d{2}$/.test(String(row[0]))) throw new Error("上游 K 线格式无效");
+            history.set(row[0], row);
+          }
+          if (history.size === before) throw new Error("上游历史分页没有推进");
+          const earliest = [...history.keys()].sort()[0];
+          if (end && earliest >= end) throw new Error("上游没有返回更早的历史数据");
+          const previous = new Date(`${earliest}T00:00:00Z`);
+          if (!Number.isFinite(previous.getTime())) throw new Error("上游交易日期无效");
+          previous.setUTCDate(previous.getUTCDate() - 1);
+          end = previous.toISOString().slice(0, 10);
+          if (rows.length < pageSize) break;
         }
-        return rows;
+        if (!history.size) throw new Error("未找到 K 线数据");
+        return [...history.values()].sort((a, b) => String(a[0]).localeCompare(String(b[0]))).slice(-count);
       },
     );
-    res.json({ success: true, data, source: "tencent" });
+    res.json({ success: true, data, source: "tencent", period, adjustment: "qfq" });
   } catch (error) {
     next(error);
   }

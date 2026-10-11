@@ -123,7 +123,7 @@ pnpm start
 | `/api/music-favorites`      | `routes/musicFavorites.js`                                    | 音乐收藏分组（需登录）                     |
 | `/api/uploads`              | `routes/uploads.js`                                           | R2 预签名直传（头像 / 应用包 / 截图）      |
 | `/api/workspace-templates`  | `routes/workspaceTemplates.js`                                | 工作区模板                                 |
-| `/api/research-stocks`      | `routes/stockResearch.js`                                     | A 股大盘、估值、财务与公司公告             |
+| `/api/research-stocks`      | `routes/stockResearch.js`                                     | 腾讯 A 股大盘、估值摘要与前复权 K 线       |
 | `/api/westock`              | `routes/westock.js`                                           | westock CLI 封装：K 线 / 行情 / 选股 / 策略 |
 | `/api/stats`                | `routes/stats.js`                                             | 访问与业务统计（仪表盘）                   |
 | `/health`                   | `index.js`                                                    | 健康检查（顺带归档访问日志）               |
