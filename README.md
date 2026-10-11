@@ -128,6 +128,12 @@ pnpm start
 | `/api/stats`                | `routes/stats.js`                                             | 访问与业务统计（仪表盘）                   |
 | `/health`                   | `index.js`                                                    | 健康检查（顺带归档访问日志）               |
 
+股票数据接口只接受带市场前缀的标的身份（例如 `sh000001` 与 `sz000001`），不推断六位代码的市场，也不保留独立摘要接口。
+
+- `GET /api/research-stocks/quotes?symbols=sh600000,sz000001`：最多 100 个标的，批量返回数字或 `null`；成交量为股，成交额和市值为元，保留腾讯行情时间。
+- `GET /api/research-stocks/search?q=关键词`：返回沪深股票、指数与交易所基金，保留市场和类型，过滤债券等不支持的标的。
+- `GET /api/research-stocks/:symbol/kline`：返回标的、周期、复权方式和必填的已确认收盘日期。股票、基金为 `qfq`，指数为 `none`；收盘时重新取数，上游尚未确认收盘时缩短缓存并保留此前确认日期，缺少或无效的上游行情时间会被拒绝。
+
 ## 部署到 Vercel
 
 项目已配置 `vercel.json`，直接关联 GitHub 仓库即可部署。
