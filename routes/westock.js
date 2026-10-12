@@ -90,7 +90,7 @@ const COMMAND_SPEC = {
     engine: "data",
     label: "财务数据",
     desc: "财务报表数据",
-    example: "finance sh600519 --type main --num 4",
+    example: "finance sh600519 --type summary --num 4",
     build: (q) => [
       "finance",
       q.code || "",

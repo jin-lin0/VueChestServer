@@ -134,6 +134,8 @@ pnpm start
 - `GET /api/research-stocks/search?q=关键词`：返回沪深股票、指数与交易所基金，保留市场和类型，过滤债券等不支持的标的。
 - `GET /api/research-stocks/:symbol/kline`：返回标的、周期、复权方式和必填的已确认收盘日期。股票、基金为 `qfq`，指数为 `none`；收盘时重新取数，上游尚未确认收盘时缩短缓存并保留此前确认日期，缺少或无效的上游行情时间会被拒绝。
 
+腾讯专用复权接口的响应可使用 `qfqday/qfqweek/qfqmonth` 或 `day/week/month` 字段；解析优先使用复权字段，字段存在但损坏时不会改读另一组数据。K 线有效空数据返回 `404 / NO_DATA`，上游响应或格式异常返回 `502 / UPSTREAM_ERROR`，上游超时返回 `504 / UPSTREAM_TIMEOUT`。
+
 ## 部署到 Vercel
 
 项目已配置 `vercel.json`，直接关联 GitHub 仓库即可部署。

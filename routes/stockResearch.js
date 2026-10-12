@@ -1,5 +1,6 @@
 const express = require("express");
 const { instrument, fetchQuotes } = require("../services/tencentQuotes");
+const { upstreamError, asUpstreamError } = require("../services/upstreamError");
 
 const router = express.Router();
 
@@ -39,8 +40,10 @@ async function fetchJson(url, timeoutMs = REQUEST_TIMEOUT_MS) {
         "User-Agent": "Mozilla/5.0 VueChest/1.0",
       },
     });
-    if (!response.ok) throw new Error(`上游返回 ${response.status}`);
+    if (!response.ok) throw upstreamError(`上游返回 ${response.status}`);
     return await response.json();
+  } catch (error) {
+    throw asUpstreamError(error);
   } finally {
     clearTimeout(timer);
   }
@@ -78,7 +81,7 @@ async function quoteBatch(symbols) {
     CACHE_TTL.quote,
     async () => {
       const rows = await fetchQuotes(symbols);
-      if (!rows.length) throw new Error("未找到有效的腾讯行情");
+      if (!rows.length) throw upstreamError("未找到有效的腾讯行情");
       return rows;
     },
   );
@@ -217,18 +220,26 @@ router.get("/:symbol/kline", async (req, res, next) => {
         while (history.size < count) {
           const pageSize = Math.min(640, count - history.size);
           const remainingMs = deadline - Date.now();
-          if (remainingMs <= 0) throw new Error("K 线历史加载超时");
+          if (remainingMs <= 0) throw upstreamError("K 线历史加载超时", 504);
           const payload = await fetchJson(
             `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},${period},,${end},${pageSize},qfq`,
             remainingMs,
           );
+          if (payload?.code !== 0)
+            throw upstreamError("上游没有返回成功的 K 线响应");
           const upstream = payload?.data?.[symbol];
-          const rows = upstream?.[type === "index" ? period : `qfq${period}`];
+          // Tencent's chart decoder accepts both keys from its dedicated qfq endpoint.
+          // A present adjustment field must be valid; do not hide a malformed field.
+          const adjustedKey = `qfq${period}`;
+          const dataKey = type !== "index" && Object.hasOwn(upstream || {}, adjustedKey)
+            ? adjustedKey
+            : period;
+          const rows = upstream?.[dataKey];
           if (!Array.isArray(rows))
-            throw new Error("上游没有返回声明复权方式的 K 线数据");
+            throw upstreamError("上游没有返回有效的 K 线数据");
           const quoteTime = upstream?.qt?.[symbol]?.[30];
           if (typeof quoteTime !== "string" || !/^\d{14}$/.test(quoteTime))
-            throw new Error("上游没有返回有效的行情确认时间");
+            throw upstreamError("上游没有返回有效的行情确认时间");
           const date = `${quoteTime.slice(0, 4)}-${quoteTime.slice(4, 6)}-${quoteTime.slice(6, 8)}`;
           const localTime = `${date}T${quoteTime.slice(8, 10)}:${quoteTime.slice(10, 12)}:${quoteTime.slice(12, 14)}`;
           const quoteMillis = Date.parse(`${localTime}+08:00`);
@@ -236,7 +247,7 @@ router.get("/:symbol/kline", async (req, res, next) => {
             !Number.isFinite(quoteMillis) ||
             new Date(quoteMillis + 8 * 3600000).toISOString().slice(0, 19) !== localTime
           )
-            throw new Error("上游行情确认时间无效");
+            throw upstreamError("上游行情确认时间无效");
           const through = session(quoteMillis).completedThrough;
           if (through < confirmedThrough) confirmedThrough = through;
           if (!rows.length) break;
@@ -246,21 +257,26 @@ router.get("/:symbol/kline", async (req, res, next) => {
               !Array.isArray(row) ||
               !/^\d{4}-\d{2}-\d{2}$/.test(String(row[0]))
             )
-              throw new Error("上游 K 线格式无效");
+              throw upstreamError("上游 K 线格式无效");
             history.set(row[0], row);
           }
-          if (history.size === before) throw new Error("上游历史分页没有推进");
+          if (history.size === before) throw upstreamError("上游历史分页没有推进");
           const earliest = [...history.keys()].sort()[0];
           if (end && earliest >= end)
-            throw new Error("上游没有返回更早的历史数据");
+            throw upstreamError("上游没有返回更早的历史数据");
           const previous = new Date(`${earliest}T00:00:00Z`);
           if (!Number.isFinite(previous.getTime()))
-            throw new Error("上游交易日期无效");
+            throw upstreamError("上游交易日期无效");
           previous.setUTCDate(previous.getUTCDate() - 1);
           end = previous.toISOString().slice(0, 10);
           if (rows.length < pageSize) break;
         }
-        if (!history.size) throw new Error("未找到 K 线数据");
+        if (!history.size) {
+          const error = new Error("未找到 K 线数据");
+          error.status = 404;
+          error.code = "NO_DATA";
+          throw error;
+        }
         return {
           data: [...history.values()]
             .sort((a, b) => String(a[0]).localeCompare(String(b[0])))

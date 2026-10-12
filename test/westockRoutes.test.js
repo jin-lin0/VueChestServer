@@ -146,12 +146,32 @@ test(
 );
 
 test(
+  "财务示例的报表类型必须被当前实际 CLI 接受",
+  { concurrency: false },
+  async () => {
+    // Invalid enum values are rejected locally, before fetching any financial data.
+    const validation = await realClient.runWestock("data", [
+      "finance", "sh600000", "--type", "__invalid_type__",
+    ]);
+    assert.equal(validation.success, false);
+    const allowed = validation.stderr.match(/允许的值:\s*([^\n]+)/)?.[1];
+    assert.ok(allowed, "实际 CLI 必须提供允许的报表类型");
+    const allowedTypes = allowed.split("|").map((value) => value.trim());
+    await withWestockRouter(async (_baseUrl, router) => {
+      const example = router.COMMAND_SPEC.finance.example.split(/\s+/);
+      const type = example[example.indexOf("--type") + 1];
+      assert.ok(allowedTypes.includes(type), `财务示例的报表类型 ${type} 不被当前 CLI 接受`);
+    });
+  },
+);
+
+test(
   "COMMAND_SPEC 里每个命令构造出的参数都能通过白名单",
   { concurrency: false },
   async () => {
     const full = {
       q: "茅台", keyword: "茅台", code: "sh600519", limit: "10", offset: "0",
-      type: "main", market: "hs", period: "day", fq: "qfq", group: "all",
+      type: "summary", market: "hs", period: "day", fq: "qfq", group: "all",
       num: "4", sub: "list", id: "macd_golden", preset: "LowPE",
       expr: "PE_TTM > 0", asset: "stock", date: "2026-09-23",
       start: "2026-09-01", end: "2026-09-23", years: "5", all: "1",

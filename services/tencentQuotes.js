@@ -1,4 +1,5 @@
 const REQUEST_TIMEOUT_MS = 10000;
+const { upstreamError, asUpstreamError } = require("./upstreamError");
 
 function instrument(raw) {
   const text = String(raw || "")
@@ -86,12 +87,16 @@ function decodeQuotes(text, symbols, fetchedAt = Date.now()) {
 }
 
 async function fetchQuotes(symbols) {
-  const response = await fetch(`https://qt.gtimg.cn/q=${symbols.join(",")}`, {
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new Error(`腾讯行情返回 ${response.status}`);
-  const text = new TextDecoder("gbk").decode(await response.arrayBuffer());
-  return decodeQuotes(text, symbols);
+  try {
+    const response = await fetch(`https://qt.gtimg.cn/q=${symbols.join(",")}`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) throw upstreamError(`腾讯行情返回 ${response.status}`);
+    const text = new TextDecoder("gbk").decode(await response.arrayBuffer());
+    return decodeQuotes(text, symbols);
+  } catch (error) {
+    throw asUpstreamError(error);
+  }
 }
 
 module.exports = { instrument, finite, fetchQuotes };

@@ -17,8 +17,8 @@ async function withRouter(mockFetch, run) {
   app.use("/api/research-stocks", require(routePath));
   app.use((error, _req, res, _next) =>
     res
-      .status(error.status || 502)
-      .json({ success: false, error: error.message }),
+      .status(error.status || 500)
+      .json({ success: false, error: error.message, code: error.code || "SERVER_ERROR" }),
   );
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
@@ -37,7 +37,7 @@ async function withRouter(mockFetch, run) {
 }
 
 const json = (value) =>
-  new Response(JSON.stringify(value), {
+  new Response(JSON.stringify({ code: 0, ...value }), {
     headers: { "Content-Type": "application/json" },
   });
 
@@ -77,18 +77,90 @@ test("daily, weekly and monthly routes use declared forward-adjusted rows", asyn
   );
 });
 
-test("unadjusted-only upstream payload is rejected instead of silently relabeled", async () => {
+test("the qfq endpoint's plain period keys are decoded for daily, weekly and monthly ETF data", async () => {
+  const rows = [["2026-10-09", "1.452", "1.480", "1.482", "1.428", "1236848"]];
+  await withRouter(
+    async (url) => {
+      const params = new URL(String(url)).searchParams.get("param").split(",");
+      assert.equal(params[0], "sh560860");
+      assert.equal(params[5], "qfq");
+      return json({ data: { sh560860: { [params[1]]: rows, qt: quoteClock("sh560860") } } });
+    },
+    async (get) => {
+      for (const period of ["day", "week", "month"]) {
+        const response = await get(`/sh560860/kline?period=${period}&count=2000`);
+        assert.equal(response.status, 200);
+        const result = await response.json();
+        assert.deepEqual(result.data, rows);
+        assert.equal(result.adjustment, "qfq");
+        assert.equal(result.completedThrough, "2026-10-09");
+      }
+    },
+  );
+});
+
+test("missing candle fields are reported as an upstream error", async () => {
   await withRouter(
     async () =>
       json({
         data: {
-          sh600000: { day: [["2026-10-09", "10", "11", "12", "9", "1000"]] },
+          sh600000: { hfqday: [["2026-10-09", "10", "11", "12", "9", "1000"]] },
         },
       }),
     async (get) => {
       const result = await get("/sh600000/kline");
       assert.equal(result.status, 502);
-      assert.equal((await result.json()).success, false);
+      assert.equal((await result.json()).code, "UPSTREAM_ERROR");
+    },
+  );
+});
+
+test("a malformed adjustment field cannot be hidden by a plain period field", async () => {
+  await withRouter(
+    async () => json({ data: { sh600000: {
+      qfqday: {}, day: [["2026-10-09", "10", "11", "12", "9", "1000"]],
+      qt: quoteClock("sh600000"),
+    } } }),
+    async (get) => {
+      const response = await get("/sh600000/kline");
+      assert.equal(response.status, 502);
+      assert.equal((await response.json()).code, "UPSTREAM_ERROR");
+    },
+  );
+});
+
+test("an empty adjusted series remains empty instead of reading another series", async () => {
+  await withRouter(
+    async () => json({ data: { sh600000: {
+      qfqday: [], day: [["2026-10-09", "10", "11", "12", "9", "1000"]],
+      qt: quoteClock("sh600000"),
+    } } }),
+    async (get) => {
+      const response = await get("/sh600000/kline");
+      assert.equal(response.status, 404);
+      assert.equal((await response.json()).code, "NO_DATA");
+    },
+  );
+});
+
+test("upstream failure codes and invalid JSON are 502; request timeouts are 504", async () => {
+  for (const mockFetch of [
+    async () => json({ code: 1, data: {} }),
+    async () => new Response("invalid JSON"),
+    async () => new Response("unavailable", { status: 503 }),
+  ]) {
+    await withRouter(mockFetch, async (get) => {
+      const response = await get("/sh600000/kline");
+      assert.equal(response.status, 502);
+      assert.equal((await response.json()).code, "UPSTREAM_ERROR");
+    });
+  }
+  await withRouter(
+    async () => { throw Object.assign(new Error("aborted"), { name: "AbortError" }); },
+    async (get) => {
+      const response = await get("/sh600000/kline");
+      assert.equal(response.status, 504);
+      assert.equal((await response.json()).code, "UPSTREAM_TIMEOUT");
     },
   );
 });
