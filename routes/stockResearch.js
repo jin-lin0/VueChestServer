@@ -1,13 +1,20 @@
 const express = require("express");
 const { instrument, fetchQuotes } = require("../services/tencentQuotes");
 const { upstreamError, asUpstreamError } = require("../services/upstreamError");
+const { createIpRateLimit } = require("../middleware/rateLimit");
+const { createTtlCache } = require("../utils/ttlCache");
 
 const router = express.Router();
 
+// 本路由不要求登录（游客也能查行情），但每个未命中缓存的请求都会以本服务的出口 IP 打腾讯。
+// 缓存只有 256 条，随机 symbol 可以稳定绕过缓存，所以需要一层按 IP 的请求额度兜底；
+// 额度按「股票页 60 秒轮询」的真实用量上取一个量级，取值与测算见 middleware/rateLimit.js。
+router.use(createIpRateLimit({ scope: "行情接口" }));
+
 const REQUEST_TIMEOUT_MS = 10000;
-const cache = new Map();
-const inFlight = new Map();
-const MAX_CACHE_ENTRIES = 256;
+// 缓存实现抽到 utils/ttlCache.js：网易云音乐路由要的是同一套语义（TTL + 同 key 并发合并 +
+// 只缓存成功结果），两处各写一份迟早会只改一边。
+const cache = createTtlCache({ maxEntries: 256 });
 
 const CACHE_TTL = {
   market: 30 * 1000,
@@ -50,29 +57,7 @@ async function fetchJson(url, timeoutMs = REQUEST_TIMEOUT_MS) {
 }
 
 async function cached(key, ttl, loader) {
-  const now = Date.now();
-  for (const [entryKey, entry] of cache) {
-    if (entry.expiresAt <= now) cache.delete(entryKey);
-  }
-  const hit = cache.get(key);
-  if (hit) return hit.value;
-  if (inFlight.has(key)) return inFlight.get(key);
-  const pending = (async () => {
-    const value = await loader();
-    if (cache.size >= MAX_CACHE_ENTRIES)
-      cache.delete(cache.keys().next().value);
-    cache.set(key, {
-      expiresAt: Date.now() + (typeof ttl === "function" ? ttl(value) : ttl),
-      value,
-    });
-    return value;
-  })();
-  inFlight.set(key, pending);
-  try {
-    return await pending;
-  } finally {
-    inFlight.delete(key);
-  }
+  return cache.get(key, ttl, loader);
 }
 
 async function quoteBatch(symbols) {

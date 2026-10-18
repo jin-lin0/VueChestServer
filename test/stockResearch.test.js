@@ -29,6 +29,11 @@ async function withRouter(mockFetch, run) {
       () => requests,
     );
   } finally {
+    // 先掐断所有连接再 close。本文件里有「上游故意挂住不返回」的用例
+    // （concurrent cache misses share one upstream request），一旦断言在挂住期间失败，
+    // 那两个请求会一直悬着，server.close() 就永远不会回调 —— 于是一次普通的断言失败
+    // 会表现成整个测试进程卡死，CI 上只能看到超时、看不到是哪条用例红。实测过。
+    server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     global.fetch = originalFetch;
     if (previous) require.cache[routePath] = previous;
