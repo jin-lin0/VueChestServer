@@ -3,14 +3,16 @@ const { Op } = require("sequelize");
 const User = require("../models/user");
 const { authMiddleware } = require("../middleware/auth");
 const { superAdminOnly } = require("../middleware/superAdmin");
+const { toBoundedInt, MAX_PAGE } = require("../utils/queryParams");
 
 const router = express.Router();
 
 // 获取用户列表
 router.get("/", authMiddleware, superAdminOnly, async (req, res) => {
-  const { page = "1", limit = "20", role, keyword } = req.query;
-  const pageNum = Math.max(1, parseInt(page));
-  const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+  const { page, limit, role, keyword } = req.query;
+  // 同上：`Math.max(1, parseInt("abc"))` 是 NaN，会让 OFFSET 变成非法 SQL。
+  const pageNum = toBoundedInt(page, { fallback: 1, max: MAX_PAGE });
+  const limitNum = toBoundedInt(limit, { fallback: 20, max: 50 });
   const offset = (pageNum - 1) * limitNum;
 
   const where = {};

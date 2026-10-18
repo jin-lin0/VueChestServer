@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const { responseCompression } = require("./middleware/responseCompression");
+const { errorHandler } = require("./middleware/errorHandler");
 require("dotenv").config();
 const sequelize = require("./config/database");
 
@@ -141,15 +142,7 @@ if (!process.env.VERCEL) {
 }
 
 // 全局错误处理中间件（兜底所有未捕获的异常，统一错误响应格式）
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  console.error("未捕获错误:", err);
-  // 统一按响应契约返回 { success:false, error }，避免裸奔 500 / 原始报错文本
-  res.status(err.status || 500).json({
-    success: false,
-    error: err.message || "服务器内部错误",
-    code: err.code || "SERVER_ERROR",
-  });
-});
+// 实现见 middleware/errorHandler.js：统一契约的同时，不把 SQL / 解析器原文回给客户端。
+app.use(errorHandler);
 
 module.exports = app;

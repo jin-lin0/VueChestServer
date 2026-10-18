@@ -69,4 +69,11 @@ test("clampPage / clampLimit 夹住越界分页参数", () => {
   assert.equal(clampLimit(5), 5);
   assert.equal(clampLimit(9999), MAX_PAGE_SIZE);
   assert.equal(clampLimit(0), DEFAULT_PAGE_SIZE);
+  // page 也要有上限：没有它时 `?page=9.9e19` 会把 offset 撑成非法 SQL（500）
+  assert.equal(clampPage("99999999999999999999"), 100000);
+  assert.equal(clampPage(Number.MAX_SAFE_INTEGER), 100000);
+  assert.equal(clampPage(""), 1);
+  // 重复 query 参数会变成数组，取第一个
+  assert.equal(clampPage(["-1"]), 1);
+  assert.equal(clampLimit(["7"]), 7);
 });

@@ -1,5 +1,6 @@
 const { Op } = require("sequelize");
 const Notification = require("../models/notification");
+const { toBoundedInt, MAX_PAGE } = require("../utils/queryParams");
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -27,16 +28,12 @@ function serializeNotification(row) {
   };
 }
 
-function clampPage(value) {
-  const page = Number.parseInt(value, 10);
-  return Number.isFinite(page) && page > 0 ? page : 1;
-}
-
-function clampLimit(value) {
-  const limit = Number.parseInt(value, 10);
-  if (!Number.isFinite(limit) || limit <= 0) return DEFAULT_PAGE_SIZE;
-  return Math.min(MAX_PAGE_SIZE, limit);
-}
+// 收口逻辑统一放在 utils/queryParams.js（routes/market.js、routes/users.js、routes/questions.js
+// 也用它）。这里曾经是第二份手写实现，而且 page 没有上限：
+// `?page=9.9e19` 会让 offset 溢出成非法 SQL → 500。
+const clampPage = (value) => toBoundedInt(value, { fallback: 1, max: MAX_PAGE });
+const clampLimit = (value) =>
+  toBoundedInt(value, { fallback: DEFAULT_PAGE_SIZE, max: MAX_PAGE_SIZE });
 
 async function listNotifications(userId, options = {}) {
   const page = clampPage(options.page);

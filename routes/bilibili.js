@@ -150,7 +150,10 @@ async function sign(params) {
 // 公共 SESSDATA（BILI_SESSDATA）。这样用户不填也能解锁需登录才可见的 AI 字幕，
 // 而愿意填的用户仍走自己的账号（分摊风控压力、不共用站长凭证）。
 function resolveSessdata(sessdata) {
-  const own = (sessdata || "").trim();
+  // 类型守卫：这两个路由**不需要登录**，sessdata 直接来自请求体。
+  // 写成 `(sessdata || "").trim()` 时，传数字/对象会抛 `trim is not a function`，
+  // 被全局错误处理兜成 500 并把原始报错文本回给客户端。
+  const own = typeof sessdata === "string" ? sessdata.trim() : "";
   if (own) return own;
   return (process.env.BILI_SESSDATA || "").trim();
 }
@@ -305,7 +308,8 @@ async function extractSubtitle(bvid, sessdata, { cid, all } = {}) {
 // 错误无需本地 try/catch —— 冒泡到全局错误处理中间件（index.js）统一返回 { error, code }
 router.post("/info", async (req, res) => {
   const { url, sessdata } = req.body || {};
-  const bvid = (url || "").match(/BV\w+/)?.[0];
+  // 同上：url 非字符串时 `.match` 会抛 TypeError；这里统一按「链接不合法」处理
+  const bvid = typeof url === "string" ? url.match(/BV\w+/)?.[0] : null;
   if (!bvid) {
     return res
       .status(400)
