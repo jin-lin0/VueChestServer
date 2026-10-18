@@ -27,6 +27,8 @@ const {
 const { safeNotify } = require("../services/notificationService");
 const { notifyReviewResult } = require("../services/marketNotifications");
 
+const { toBoundedInt, MAX_PAGE, parseIdList } = require("../utils/queryParams");
+
 const router = express.Router();
 // 获取分类列表（只统计已通过的应用，单次 GROUP BY 查询，避免 N+1）
 router.get("/categories", async (req, res) => {
@@ -103,18 +105,57 @@ router.get("/ranking", async (req, res) => {
   });
 });
 
+/** 列表 / 批量共用的行序列化：权限与联网白名单是字符串，统一转成数组。 */
+function serializeAppRow(row) {
+  const data = row.toJSON();
+  data.allowNetwork = parseAllowNetwork(data.allowNetwork);
+  data.permissions = parsePermissions(data.permissions);
+  return data;
+}
+
+const APP_LIST_ATTRIBUTES = [
+  "id",
+  "name",
+  "icon",
+  "description",
+  "version",
+  "author",
+  "category",
+  "size",
+  "isOfficial",
+  "isListed",
+  "downloads",
+  "status",
+  "allowNetwork",
+  "permissions",
+  "sha256",
+  "createdAt",
+  "updatedAt",
+];
+
 // 获取应用列表（公开市场只返回已通过的应用）
 router.get("/apps", optionalAuth, async (req, res) => {
-  const { category, keyword, page = "1", limit = "20" } = req.query;
-  const pageNum = Math.max(1, parseInt(page));
-  const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
+  const { category, keyword, page, limit, ids } = req.query;
+  // 这两个值直接进 OFFSET / LIMIT。曾经写成 `Math.max(1, parseInt(page))`：
+  // parseInt("abc") 是 NaN，而 Math.max(1, NaN) 还是 NaN → `OFFSET NaN` → 500。
+  // 本接口免登录、且是应用市场首屏在用的，任何人加个 ?page=abc 就能把它打成 500。
+  const pageNum = toBoundedInt(page, { fallback: 1, max: MAX_PAGE });
+  const limitNum = toBoundedInt(limit, { fallback: 20, max: 50 });
   const offset = (pageNum - 1) * limitNum;
+
+  // 批量模式：`GET /api/market/apps?ids=1,2,3`。
+  // 首页每次挂载都会刷新已装应用的元信息（refreshInstalledMeta → checkForUpdates{force}），
+  // 客户端原来是「一个应用一个请求」（fetchAppDetail → GET /apps/:id）：
+  // 装 8 个应用就是 8 个 HTTP + 8 条 SQL，实测墙钟 ~140ms（连接池上限 5，只能分批排队），
+  // 而单条查询只要 ~48ms。这里一次查完，形状与列表项完全一致，客户端可直接复用。
+  const batchIds = ids === undefined ? null : parseIdList(ids);
 
   const where = {};
   // 非管理员只看到已通过的应用
   if (!isAdmin(req.user)) {
     where.status = "approved";
-    where.isListed = true;
+    // 目录隐藏不影响已安装用户获取元信息，与详情接口保持一致。
+    if (batchIds === null) where.isListed = true;
   }
   if (category) {
     where.category = category;
@@ -126,29 +167,33 @@ router.get("/apps", optionalAuth, async (req, res) => {
     ];
   }
 
-  const attributes = [
-    "id",
-    "name",
-    "icon",
-    "description",
-    "version",
-    "author",
-    "category",
-    "size",
-    "isOfficial",
-    "isListed",
-    "downloads",
-    "status",
-    "allowNetwork",
-    "permissions",
-    "sha256",
-    "createdAt",
-    "updatedAt",
-  ];
+  if (batchIds) {
+    // 空列表直接回，别让 `IN ()` 这种无意义查询打出去
+    if (batchIds.length === 0) {
+      return res.json({
+        success: true,
+        data: { items: [], total: 0, page: 1, limit: 0, totalPages: 0 },
+      });
+    }
+    where.id = { [Op.in]: batchIds };
+    const rows = await MarketApp.findAll({
+      where,
+      // 更新页直接消费批量结果，需要更新说明；普通市场列表仍保持轻量字段。
+      attributes: [...APP_LIST_ATTRIBUTES, "releaseNotes"],
+      order: [["createdAt", "DESC"]],
+    });
+    const items = rows.map(serializeAppRow);
+    // 批量返回不翻页；用 items.length 而不是 batchIds.length，
+    // 因为请求的 id 里可能有审核未通过或已删除的应用。
+    return res.json({
+      success: true,
+      data: { items, total: items.length, page: 1, limit: items.length, totalPages: 1 },
+    });
+  }
 
   const { rows, count } = await MarketApp.findAndCountAll({
     where,
-    attributes,
+    attributes: APP_LIST_ATTRIBUTES,
     order: [["createdAt", "DESC"]],
     offset,
     limit: limitNum,
@@ -157,12 +202,7 @@ router.get("/apps", optionalAuth, async (req, res) => {
   res.json({
     success: true,
     data: {
-      items: rows.map((r) => {
-        const d = r.toJSON();
-        d.allowNetwork = parseAllowNetwork(d.allowNetwork);
-        d.permissions = parsePermissions(d.permissions);
-        return d;
-      }),
+      items: rows.map(serializeAppRow),
       total: count,
       page: pageNum,
       limit: limitNum,
