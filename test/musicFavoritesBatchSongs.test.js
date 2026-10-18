@@ -4,15 +4,6 @@ const express = require("express");
 const { errorHandler } = require("../middleware/errorHandler");
 const { Op } = require("sequelize");
 
-/**
- * 批量加入收藏歌曲（POST /api/music-favorites/groups/:id/songs/batch）。
- *
- * 存在的理由：单条加歌是 findOrCreate（SELECT + INSERT 两次远端往返，热态约 43ms/次），
- * 首次登录迁移本地收藏时前端只能串行 await，上百首就是十几秒。
- * 批量版把「查询数」压到固定 3 次：分组归属 + 已存在探测 + bulkCreate。
- *
- * 这里钉住的是**查询形状与报数诚实性**，数据库与鉴权按项目既有做法换桩。
- */
 async function withRouter(run, options = {}) {
   const paths = {
     auth: require.resolve("../middleware/auth"),
@@ -62,8 +53,7 @@ async function withRouter(run, options = {}) {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
   app.use("/api/music-favorites", router);
-  // 挂**生产用的**错误处理器：路由现在把未预期的异常交给 next(e) 统一分发，
-  // 不挂就只能落到 Express 默认处理器（500 + HTML），钉不住「不回显驱动原文」这条契约。
+  // 使用真实错误中间件验证状态码及脱敏响应。
   app.use(errorHandler);
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));

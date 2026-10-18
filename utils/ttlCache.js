@@ -1,28 +1,9 @@
-/**
- * 进程内 TTL 缓存 + 同 key 并发合并（in-flight coalescing）。
- *
- * 存在的理由：本服务有几处「把第三方上游的只读结果原样转发」的路由
- * （`routes/stockResearch.js` 的腾讯行情、`routes/netease.js` 的网易云音乐）。
- * 这些上游的共同点是：
- *
- * 1. **慢**——一次未命中就是 100~300ms 的出网往返，而调用方（股票页 60 秒轮询、
- *    音乐页首屏 7 个并发请求）会反复打同一批 URL；
- * 2. **同 key 并发重复**——首屏多个组件同时要同一份数据时，没合并就会有 N 个出网请求；
- * 3. **失败不能缓存**——上游抖一下就把错误缓存住，等于把一次瞬时故障放大成整个 TTL 内全挂。
- *
- * 所以这里只做三件事，不做更多：查表、合并、以及**只缓存成功结果**。
- * 明确不做的：不做过期后台刷新、不做持久化、不做跨进程共享——本服务是单进程，
- * 引入这些只会多出一堆失效路径。
- */
+/** 进程内 TTL 缓存，合并相同 key 的并发加载；只缓存成功结果。 */
 
 /**
  * @param {object} [options]
- * @param {number} [options.maxEntries=256] 最多保留多少条。超出时按**插入顺序**淘汰最旧的一条
- *   （Map 保序，取第一个 key 即可）。故意不做 LRU 刷新：命中时改动 Map 顺序会让
- *   淘汰行为依赖访问序列、更难推理，而这里要的只是「内存有上限」。
- * @param {number} [options.maxValueBytes=Infinity] 单条值超过这个字节数就**不入缓存**
- *   （仍然照常返回给调用方）。条数上限管不住内存：一条 400KB 的响应在 V8 堆里往往
- *   是好几 MB，几十条就能吃掉几十 MB。默认不限，只有明确知道值会很大的缓存才需要传。
+ * @param {number} [options.maxEntries=256] 最大条目数，超出时按插入顺序淘汰
+ * @param {number} [options.maxValueBytes=Infinity] 单条序列化字节上限，超限结果仍返回但不缓存
  * @returns {{ get: Function, prune: Function, clear: Function, size: () => number }}
  */
 function createTtlCache({

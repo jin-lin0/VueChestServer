@@ -22,21 +22,10 @@ function getGeoFromFrontend(headers) {
   return null;
 }
 
-// 与 models/visitLog.js 的列宽一致（path STRING(200)、country/city STRING(100)）。
-//
-// 为什么要在写库前截断：这三个值全是**不可信输入** —— path 来自 URL，country/city
-// 来自客户端可以随意伪造的 `X-Client-Geo` 头。而 MySQL 严格模式下超长写入会让
-// **整条 INSERT 失败**（批量归档见 flushEntries）。实测：一个 252 字符的 path 就能让
-// 整批归档失败、并且这个维度一直留在 buffer 里重试，`/health` 从此永久回 503
-// （routes/health.js 把归档失败算作降级）。截断把这个问题挡在写入之前。
-//
-// 这几个数字由 test/visitLogger.test.js 的一条用例对着真实模型核对，改列宽忘改这里会变红。
+// 输入按模型列宽截断，避免单条超长字段导致批量归档失败。
 const FIELD_LIMITS = { path: 200, country: 100, city: 100 };
 
-// 一个 flush 窗口内最多记住多少个「日期/路径/地区」维度。真实用量远低于此
-// （4 分钟窗口内的路由数 × 地区数）。这是个防无界增长的闸门：path 完全由请求方决定，
-// 没有闸门时一串不重复的 URL 就能同时顶穿内存和落库规模。满了之后**新维度直接丢弃**
-// （已经在计数里的维度继续累加），丢弃次数每轮 flush 汇总成一条 warn。
+// 缓冲区满时丢弃新维度，已有维度继续累加；归档时汇总丢弃数量。
 const MAX_BUFFER_KEYS = 2000;
 
 // 内存计数器：key = JSON 编码的 [date, path, country, city] → count
@@ -67,12 +56,7 @@ function clampField(value, limit) {
   return value.length > limit ? value.slice(0, limit) : value;
 }
 
-// key 用 JSON 数组编码，而不是 `|` 拼接。
-//
-// 为什么：path 里可以带 `|`（实测 `GET /api/__pipe|probe` 会被 Node 原样收下并进到
-// req.path），拼字符串再 split 会让字段整体错位 —— 实测那一行写出来是
-// path=/api/__pipe、country=probe、city=CN，真实的 CN/Beijing 被挤掉了，
-// 等于让请求方往 country 列里写任意内容。JSON 没有这个歧义。
+// 用 JSON 数组编码维度，避免路径中的分隔符造成字段错位。
 function encodeKey(date, path, country, city) {
   return JSON.stringify([date, path, country, city]);
 }
@@ -109,22 +93,8 @@ function drainBuffer() {
 const UPSERT_COLUMNS = ["date", "path", "country", "city", "count"];
 
 /**
- * 把整批计数拼成**一条** upsert 语句。
- *
- * 为什么值得拼：每个「日期|路径|地区」维度原来都要一次 `findOrCreate`
- * （= SELECT 一次，命中时再 UPDATE 累加一次），而 MySQL 在远端
- * （热态单次往返 41~47ms，见 config/database.js 的注释）。39 个维度的实测：
- * `/health` 里那次 flush 花了 **8.01 秒**（同期空 buffer 的 /health 是 46ms）。
- * 而 `/health` 是**会 await 这次 flush** 的（routes/health.js），
- * 监控探针与 Vercel 的每日保活都挂在它上面 —— 落库慢会直接把探针拖到超时。
- *
- * 唯一索引 (date,path,country,city) 已在 models/visitLog.js 声明，
- * 所以这些维度天然可以走 `ON DUPLICATE KEY UPDATE count = count + ...`。
- *
- * 用 `AS new` 别名而不是 `VALUES()`：MySQL 8.0.20 起 VALUES() 已废弃，
- * 实测会带上 warning 1287，而别名写法零 warning（本机 8.0.41 验证）。
- * 代价是 MariaDB 不认这个语法 —— 那条路径会落到 flushOneByOne，
- * 慢但结果一样，不会写错数据。
+ * 按唯一维度索引批量累加计数。
+ * 使用 MySQL 行别名语法；不支持该语法时退回逐条写入。
  */
 function buildUpsert(records) {
   const table = VisitLog.getTableName();
@@ -142,11 +112,8 @@ function buildUpsert(records) {
 }
 
 /**
- * 把内存计数器落库。
- * @returns {Promise<{flushed: number, failed: number}>} 以「日期|路径|地区」维度计数：
- *   flushed = 真正写成功的维度数，failed = 没写成功的维度数。
- *   以前只回 `flushed: entries.length`（尝试数），写失败也报成功，
- *   健康检查因此永远是绿灯 —— 见 routes/health.js 的注释。
+ * 归档内存计数器。
+ * @returns {Promise<{flushed: number, failed: number}>} 成功与失败的维度数
  */
 async function flushEntries() {
   const records = drainBuffer();
@@ -179,17 +146,12 @@ async function flushEntries() {
   return flushOneByOne(records);
 }
 
-/**
- * 逐条落库（批量语句失败时的兜底，语义与历史实现一致）。
- */
+/** 批量明确失败后的逐条写入兜底。 */
 async function flushOneByOne(records) {
   let flushed = 0;
   let failed = 0;
 
-  // 分批并发，不再串行：每个维度最多两条语句（建行 + 累加），串行 N 个维度就是
-  // 2N 次串行往返（实测 39 个维度 8 秒）。但也不能一次全发 —— 兜底路径的规模
-  // 由 MAX_BUFFER_KEYS 决定，2000 个维度一次全发会往连接池里排 4000 个查询，
-  // 把正常请求一起堵在队列后面。每批 16 个，配合连接池（max: 5）刚好不空转。
+  // 限制每批并发数，避免兜底写入占满正常请求的连接队列。
   const CONCURRENCY = 16;
   for (let start = 0; start < records.length; start += CONCURRENCY) {
     const batch = records.slice(start, start + CONCURRENCY);

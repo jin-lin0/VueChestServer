@@ -3,17 +3,6 @@ const assert = require("node:assert/strict");
 const express = require("express");
 const { errorHandler } = require("../middleware/errorHandler");
 
-/**
- * 请求体字段的类型守卫：非字符串输入必须落到「400 / 按空值处理」，
- * 不能变成 `xxx.trim is not a function` 的 500 —— 那既不合法，
- * 又会经全局错误处理把原始报错文本回给客户端（信息泄漏）。
- *
- * 这里覆盖两个真实站点：
- *  - /api/bilibili/info（**无需登录**，任何人可打）
- *  - /api/music-favorites/groups（登录用户）
- *
- * 数据库、鉴权、上游 fetch 均按项目既有测试做法换成桩。
- */
 const ROUTE_CACHE_KEYS = {
   bilibili: {
     mount: "/api/bilibili",
@@ -29,10 +18,7 @@ const ROUTE_CACHE_KEYS = {
   },
 };
 
-/**
- * 客户端请求必须固定用「未被替换的」fetch：一旦把 globalThis.fetch 换成上游桩，
- * 测试自己的请求也会打到桩上（返回的对象没有 status），断言会变成 undefined === 400 的假失败。
- */
+/** 客户端保留原始 fetch，避免测试请求进入上游替身。 */
 let clientFetch = globalThis.fetch;
 
 async function withServer(kind, run, stubs = {}) {

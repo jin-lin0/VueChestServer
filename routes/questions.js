@@ -36,11 +36,6 @@ function pickFields(body, allowed) {
   return picked;
 }
 
-/**
- * 文本必填项校验：非字符串一律算不合法。
- * 原来的 `!req.body.name.trim()` 在 name 是数字/对象时会抛 TypeError，
- * 被全局错误处理兜成 500 并把原始报错文本回给客户端。
- */
 function isBlankText(value) {
   return typeof value !== "string" || !value.trim();
 }
@@ -110,10 +105,7 @@ router.delete(
   },
 );
 
-// 获取题目列表（支持筛选和搜索）
-// 分页参数一律先收口再进 SQL：这两个接口**无需登录**，直接 `parseInt` 会拼出
-// `LIMIT -1` / `OFFSET NaN` 这类语法错误，变成 500 并把原始 MySQL 报错回给客户端
-// （实测 `?limit=-1`、`?page=-1`、`?page=abc&limit=abc`、`?page=9.9e19` 都会 500）。
+// 题目列表支持筛选和搜索，分页参数先限制到有效范围。
 router.get("/", async (req, res) => {
   const { categoryId, difficulty, keyword } = req.query;
   const page = toBoundedInt(req.query.page, { fallback: 1, max: MAX_PAGE });
@@ -164,7 +156,7 @@ router.get("/:id", async (req, res) => {
 
 // 随机抽题
 router.get("/random/:count", async (req, res) => {
-  // 同上：`/random/-3` 会拼出 LIMIT -3（实测 500），负数按 1 处理
+  // 随机数量限制为有效正整数。
   const count = toBoundedInt(req.params.count, { fallback: 1, max: 50 });
   const { categoryId, difficulty } = req.query;
   const where = {};
@@ -231,16 +223,8 @@ router.put("/:id", authMiddleware, adminOnly, async (req, res) => {
   res.json(question);
 });
 
-// 批量删除题目。
-//
-// 前端原来是「勾中 N 道就发 N 个 DELETE /api/questions/:id」（Promise.all）。
-// 除了 N 个 HTTP + N 条 SQL，那里还有个更难看的正确性问题：Promise.all 只要有一个
-// reject 就整体提示「批量删除失败」，可**前面已经删掉的那些是真删了** —— 管理员看到
-// 「失败」去重试，实际上列表已经少了几行，而且那次失败路径不会刷新列表。
-// 这里合成一次请求，返回真实删掉的行数，由前端如实汇报。
-//
-// 用 POST 而不是带 body 的 DELETE：DELETE + body 在部分代理/网关下会被丢掉，
-// 而 body 一旦丢了，`ids` 变成 undefined，语义就从「删这几道」滑向「删空集」。
+// 一次请求删除多道题，返回实际删除数量。
+// 使用 POST 承载 id 数组，避免 DELETE 请求体的代理兼容问题。
 router.post("/batch-delete", authMiddleware, adminOnly, async (req, res) => {
   const ids = parseIdList(req.body && req.body.ids);
   if (ids.length === 0) {

@@ -3,13 +3,6 @@ const assert = require("node:assert/strict");
 const express = require("express");
 const { errorHandler } = require("../middleware/errorHandler");
 
-/**
- * 分页参数口径的**接线**测试。
- *
- * 单测 utils/queryParams.js 只能证明那个函数是对的；这里证明「路由真的用了它」——
- * 之前的 bug 正是 `Math.max(1, parseInt(page))` 写死在路由里，
- * `?page=abc` → NaN → `OFFSET NaN` → 500。
- */
 
 /** 用桩替换一批模块，返回可还原的现场。 */
 function stubModules(map) {

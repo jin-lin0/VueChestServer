@@ -62,9 +62,7 @@ router.post("/send-code", async (req, res) => {
     });
   }
 
-  // 先**只读地**判邮箱冷却。这一步既不能改状态、也不能消耗 IP 配额：
-  //   - 消耗配额 → 用户连点几下重发就把整点额度烧光，被锁一小时；
-  //   - 改状态（铸新码 + 重记冷却）→ 那就是下面 IP 闸门那条注释说的问题。
+  // 先只读检查邮箱冷却，避免重复点击消耗 IP 配额。
   const cooldown = cooldownRemaining(email);
   if (cooldown > 0) {
     return res.status(429).json({
@@ -74,10 +72,7 @@ router.post("/send-code", async (req, res) => {
     });
   }
 
-  // 按邮箱的 60 秒冷却挡不住「换邮箱」刷 Resend 额度，这里再加一层与收件人无关的 IP 上限。
-  // 必须早于 createCode：被这个闸门拒绝的请求要是已经铸了新码、重记了冷却，
-  // 用户手上那个还没用过的码就作废了（拿去注册会被判「验证码错误」），
-  // 而重发还会回「验证码已发送」——一封信都没发出去。
+  // IP 配额必须先于 createCode 检查，拒绝请求不能使用户已有验证码失效。
   const gate = mailIpLimiter.hit(clientIpOf(req));
   if (!gate.allowed) return tooManyRequests(res, gate.retryAfterMs, "验证码请求");
 

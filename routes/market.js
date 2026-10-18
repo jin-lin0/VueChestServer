@@ -136,18 +136,12 @@ const APP_LIST_ATTRIBUTES = [
 // 获取应用列表（公开市场只返回已通过的应用）
 router.get("/apps", optionalAuth, async (req, res) => {
   const { category, keyword, page, limit, ids } = req.query;
-  // 这两个值直接进 OFFSET / LIMIT。曾经写成 `Math.max(1, parseInt(page))`：
-  // parseInt("abc") 是 NaN，而 Math.max(1, NaN) 还是 NaN → `OFFSET NaN` → 500。
-  // 本接口免登录、且是应用市场首屏在用的，任何人加个 ?page=abc 就能把它打成 500。
+  // 分页参数限制为有效范围，避免非法 OFFSET 或 LIMIT。
   const pageNum = toBoundedInt(page, { fallback: 1, max: MAX_PAGE });
   const limitNum = toBoundedInt(limit, { fallback: 20, max: 50 });
   const offset = (pageNum - 1) * limitNum;
 
-  // 批量模式：`GET /api/market/apps?ids=1,2,3`。
-  // 首页每次挂载都会刷新已装应用的元信息（refreshInstalledMeta → checkForUpdates{force}），
-  // 客户端原来是「一个应用一个请求」（fetchAppDetail → GET /apps/:id）：
-  // 装 8 个应用就是 8 个 HTTP + 8 条 SQL，实测墙钟 ~140ms（连接池上限 5，只能分批排队），
-  // 而单条查询只要 ~48ms。这里一次查完，形状与列表项完全一致，客户端可直接复用。
+  // 按 ids 批量读取已安装应用的更新元信息。
   const batchIds = ids === undefined ? null : parseIdList(ids);
 
   const where = {};

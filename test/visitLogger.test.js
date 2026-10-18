@@ -43,13 +43,7 @@ async function flushQuietly(logger) {
   }
 }
 
-/**
- * 往 buffer 里塞若干条待落库记录。
- *
- * 为什么需要预热：中间件里有「距上次 flush 超过 4 分钟就顺手 flush 一次」的兜底，
- * 而 `lastFlushAt` 初值是 0，所以**第一次** hit 必触发一次自动 flush（同步清空 buffer，
- * 异步写库）。先空跑一条并 await 掉它，后面的断言才不会被这次自动 flush 串味。
- */
+/** 首次请求会自动归档，先完成预热以隔离后续缓冲区断言。 */
 async function seed(logger, paths) {
   // 预热那一次同样会走「批量→兜底」，而模型的桩故意没有 sequelize，
   // 于是它的 console.error 是**同步**发生的 —— 静音要包住 hit 本身才盖得住。
@@ -63,13 +57,7 @@ async function seed(logger, paths) {
   for (const path of paths) hit(logger, { path });
 }
 
-/**
- * 只提供逐条写入能力的模型桩。
- *
- * 故意**不给** `sequelize` / `getTableName`：于是批量语句会抛错、自动退回逐条，
- * 下面这些用例钉的正是那条兜底路径的语义（建行/累加/失败放回）。
- * 走批量路径的用例见 makeBulkVisitLog。
- */
+/** 省略批量写入接口，强制进入逐条写入兜底。 */
 function makeVisitLog(handler) {
   const queries = [];
   return {
@@ -251,9 +239,7 @@ test("非 /api 路径不入 buffer", async () => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// 批量归档路径（默认路径）
-// ─────────────────────────────────────────────────────────────
+// 批量归档
 
 test("整批只发一条 upsert 语句：列名/占位符/别名写法都对得上", async () => {
   const visitLog = makeBulkVisitLog();
@@ -267,7 +253,7 @@ test("整批只发一条 upsert 语句：列名/占位符/别名写法都对得�
     assert.equal(visitLog.calls.length, 2, "预热 1 条 + 本批 1 条");
 
     const { sql, options } = visitLog.calls.at(-1);
-    // 必须带 `AS new` 别名：VALUES() 从 MySQL 8.0.20 起已废弃（实测 warning 1287）。
+    // 使用行别名引用待插入值，避免已废弃的 VALUES() 用法。
     assert.equal(
       sql,
       "INSERT INTO `visit_logs` (`date`,`path`,`country`,`city`,`count`) VALUES " +
@@ -393,9 +379,7 @@ test("逐条兜底按批并发，不会一次把连接池排满", async () => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// 不可信输入的收口：截断、编码、容量
-// ─────────────────────────────────────────────────────────────
+// 输入边界：字段长度、维度编码和缓冲容量
 
 test("超长 path / 地区在进 buffer 前被截断到列宽", async () => {
   const visitLog = makeBulkVisitLog();
@@ -418,8 +402,7 @@ test("超长 path / 地区在进 buffer 前被截断到列宽", async () => {
 });
 
 test("path 里的 | 不再把 country/city 挤错位", async () => {
-  // 实测过的现场：`GET /api/__pipe|probe` 用 `|` 拼 key 再 split 时，
-  // 写出的行是 path=/api/__pipe、country=probe、city=CN —— 请求方可以往 country 列写任意内容。
+  // 路径含分隔符时，维度编码仍须保持字段对应。
   const visitLog = makeBulkVisitLog();
   const { logger, restore } = freshLogger(visitLog);
   try {

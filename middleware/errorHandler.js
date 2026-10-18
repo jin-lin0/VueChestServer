@@ -1,24 +1,6 @@
 /**
- * 全局错误处理：统一响应契约 `{ success: false, error, code }`。
- *
- * 为什么不能直接用 `err.message`：
- * 「兜底未捕获异常」和「把原始报错原文回给客户端」是两件事。实测过这类泄漏：
- *   GET /api/questions?limit=-1
- *     → 500 {"error":"You have an error in your SQL syntax; check the manual ..."}
- *   GET /api/questions?page=abc
- *     → 500 {"error":"Undeclared variable: NaN"}
- *   POST /api/questions (畸形 JSON)
- *     → 400 {"error":"Expected property name or '}' in JSON at position 1"}
- * 前两类把库表结构与 SQL 片段暴露给了**未登录**调用方，还顺带告诉攻击者
- * 「这个参数进了 SQL」；第三类暴露了 parser 内部偏移量。
- *
- * 所以把「错误 → 响应」收成一张规则表（describeError）：
- *   - 请求体解析失败 / 过大：换成人话（状态码沿用 express 给的）；
- *   - 唯一约束冲突：这是调用方能自己修的问题，给 409，不该按 500 报；
- *   - **模型/驱动判定为「输入有问题」的报错**：同样是调用方能自己修的问题，给 400；
- *   - 其余驱动层报错（Sequelize*）与 JS 运行时异常（TypeError 等）：
- *     只回通用文案，细节留服务端日志；
- *   - 业务显式抛出的可读错误（`throw new Error("稿件不可见")`、`error.status = 400`）：照旧透传。
+ * 统一错误响应 { success: false, error, code }。
+ * 输入错误返回可读说明；驱动和运行时故障隐藏原文，细节仅记录于服务端。
  */
 
 /** 驱动层 / 运行时异常：这些原文一律不外发。 */
@@ -30,10 +12,7 @@ const INTERNAL_CODE = "SERVER_ERROR";
 /** 输入类错误的统一 code：调用方改一下请求就能通过。 */
 const VALIDATION_CODE = "VALIDATION_ERROR";
 
-/**
- * 模型层校验的失败原因（Sequelize 的 validatorKey → 中文）。
- * 这些字段名来自我们自己的模型定义，不是客户端可控内容。
- */
+/** 模型校验失败原因，与 Sequelize validatorKey 对应。 */
 const VALIDATOR_REASON = Object.freeze({
   is_null: "不能为空",
   notEmpty: "不能为空",
@@ -54,16 +33,7 @@ const VALIDATOR_REASON = Object.freeze({
   max: "取值过大",
 });
 
-/**
- * 驱动层里「换个输入就能过」的 MySQL 错误号 → 中文原因。
- *
- * 为什么按错误号白名单，而不是把所有 SequelizeDatabaseError 都当 400：
- * 语法的错、缺默认值（1364）、表不存在这类是**真正的服务端故障**，
- * 报 400 会把「我们自己写错了 SQL」伪装成「你输入有误」，反而掩盖问题。
- * 实测过这几类输入错的形状（sql_mode 含 STRICT_TRANS_TABLES，所以都是报错而非静默截断）：
- *   description 70000 字 → ER_DATA_TOO_LONG / errno 1406
- *   status='bogus'      → WARN_DATA_TRUNCATED / errno 1265
- */
+/** 仅将明确的输入类数据库错误映射为 400，SQL 或表结构故障仍返回 500。 */
 const INPUT_FAULT_DB_CODES = Object.freeze({
   ER_DATA_TOO_LONG: "内容超出该字段允许的长度",
   ER_WARN_DATA_OUT_OF_RANGE: "数值超出允许范围",
@@ -76,10 +46,7 @@ const INPUT_FAULT_DB_CODES = Object.freeze({
 });
 
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-// 只认这两种句式，且只从 `for column 'X'` / `Column 'X' cannot be null` 里取列名。
-// 不能用「第一处引号内容」：1366 的报文形如
-//   Incorrect integer value: 'abc' for column 'foo' at row 1
-// 第一处引号是**调用方传进来的值**，回显它等于把客户端内容原样写进错误文案。
+// 只提取已知句式中的列名，不回显报文里的用户输入值。
 const COLUMN_FOR_RE = /for column '([A-Za-z_][A-Za-z0-9_]*)'/;
 const COLUMN_NULL_RE = /Column '([A-Za-z_][A-Za-z0-9_]*)' cannot be null/;
 
@@ -167,8 +134,7 @@ function describeError(err) {
     };
   }
 
-  // 模型层校验失败（必填缺失、超长、格式不符）：调用方改一下请求就能过，给 400。
-  // 实测：username 传 200 字 → Validation len on username failed（原来报 500）
+  // 模型校验失败返回 400。
   if (error.name === "SequelizeValidationError") {
     return {
       status: 400,

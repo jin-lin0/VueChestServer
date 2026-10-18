@@ -2,36 +2,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const express = require("express");
 
-/**
- * 「被拒绝的请求不许改动状态」这一类缺陷在验证码发送接口上的两个表现。
- *
- * `/send-code` 与 `/forgot-password` 原来的顺序是：
- *
- *   1. `createCode(email)`      ← **先写 store**：铸新码、并把 60 秒重发冷却重新计时
- *   2. `mailIpLimiter.hit(ip)`  ← 再判 IP 配额，被拒就 429 返回
- *
- * 于是「被 IP 闸门拒绝」这个请求**已经**改动了状态：它把用户手上那个还没用掉、
- * 也还没过期的验证码换成了一个新的（还没发出去、用户永远看不到的）码，
- * 同时把重发冷却重新计时到未来。
- *
- * 用户看到的是两件坏事：
- *   - 手上收到的那个码失效了（拿它去注册会被判「验证码错误」）；
- *   - 再点一次重发，接口回「验证码已发送，请 N 秒后再试」——**谎报已发送**，
- *     而这期间一封信都没发出去。
- *
- * 正确顺序是「先只读地判冷却 → 再判 IP 闸门 → 最后才写 store」。判冷却必须早于
- * IP 闸门，否则用户连点几下重发就会把整点 IP 配额烧光、被锁一小时（那是真回退）。
- */
 
 const authRouterPath = require.resolve("../routes/auth");
 const throttlePath = require.resolve("../utils/authThrottle");
 const codePath = require.resolve("../utils/verificationCode");
 
-/**
- * 起一个真实挂载 `/api/auth` 的路由，把碰数据库/发邮件的模块换成桩。
- * `routes/auth`、`utils/authThrottle`、`utils/verificationCode` 每个用例都重新加载，
- * 让 IP 配额与验证码 store 在用例之间互不污染（沿用 authLoginThrottle.test.js 的写法）。
- */
+/** 挂载真实认证路由，替换数据库和邮件依赖；每个用例重建限流与验证码状态。 */
 async function withAuthRouter(run, options = {}) {
   const sent = [];
   const stubbed = {

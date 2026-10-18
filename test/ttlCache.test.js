@@ -3,16 +3,6 @@ const assert = require("node:assert/strict");
 
 const { createTtlCache } = require("../utils/ttlCache");
 
-/**
- * 共享 TTL 缓存的回归门禁。
- *
- * 这个工具被 `routes/stockResearch.js`（腾讯行情）和 `routes/netease.js`（网易云音乐）
- * 共用，它的每一条语义都属于「写错了也不会报错、只会悄悄变慢或悄悄变脏」：
- *   - 不合并并发 → 首屏 7 个请求变成 7 次出网，接口照样 200；
- *   - 把失败也写进缓存 → 上游抖一下，整个 TTL 内所有人拿到同一个错误；
- *   - 淘汰写反 → 只是命中率下降，没有任何外部症状。
- * 所以逐条钉住。
- */
 
 test("TTL 内命中不调 loader，不同 key 各自独立加载", async () => {
   const cached = createTtlCache();

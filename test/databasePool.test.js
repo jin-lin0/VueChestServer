@@ -3,16 +3,6 @@ const assert = require("node:assert/strict");
 
 const DB_PATH = require.resolve("../config/database");
 
-/**
- * 连接池参数的回归门禁。
- *
- * 为什么需要它：`pool.min` 从 0 改成 1 的效果是「第一个请求快 160ms」，
- * 属于**改错了也不会让任何测试变红**的那类配置 —— 只有真去远端量才能发现。
- * 实测数据（mysql.sqlpub.com，与本项目同款配置）：
- *   min:0 → 热 47.4ms，静置 14s 后首次 205.9ms（+158ms 全花在重建连接）
- *   min:1 → 热 41.1ms，静置 14s 后首次  43.2ms
- * 这条用例把这两个分支钉住，避免以后有人「顺手清理」掉 min。
- */
 
 /** 在指定环境变量下重新加载 config/database，拿到真正被使用的配置。 */
 function loadPool(env) {

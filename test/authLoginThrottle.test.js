@@ -83,13 +83,7 @@ function fakeUser({ password = "correct", isActive = true } = {}) {
 const IP_A = { "x-forwarded-for": "203.0.113.1" };
 const IP_B = { "x-forwarded-for": "203.0.113.2" };
 
-/**
- * 退避走的是真实时钟，所以不能在固定次数上写死：
- * 第 6 次失败记下 1s 退避，紧接着的这次请求可能刚好落在窗口内（429），
- * 也可能窗口已过（401，并记下第 7 次失败 → 2s 窗口）。
- * 但「最多再试 3 次必然被拦」是确定的：1s 窗口过期后下一次失败会把窗口翻倍到 2s，
- * 紧接着的那一次不可能跨过 2s。精确的退避时长由 authThrottle.test.js 用注入时钟断言。
- */
+/** 集成测试使用真实时钟，允许跨过短退避窗口；精确时长由注入时钟的单元测试验证。 */
 async function expectBlockedWithin(request, attempts, body, headers) {
   const statuses = [];
   for (let i = 0; i < attempts; i += 1) {

@@ -4,27 +4,14 @@ const User = require("../models/user");
 const { authMiddleware } = require("../middleware/auth");
 const { isPositiveIntParam } = require("../utils/queryParams");
 
-/**
- * 市场应用的云端键值存储接口（需登录）。
- *
- * 路径中的 :appId 与应用市场里的应用 id 对应，:key 由应用自定义。
- * 所有读写都以「当前用户 + appId」为作用域，天然隔离不同用户、不同应用的数据。
- * 沙箱侧通过 __VueChest__.cloud.* 调用本路由（见 src/lib/sandbox-bridge.ts）。
- */
+/** 市场应用云端键值存储，所有读写按当前 userId 和 appId 隔离。 */
 const router = express.Router();
 router.use(authMiddleware);
 
 const MAX_KEY_CHARS = 120;
 const MAX_VALUE_CHARS = 200_000;
 
-// 单个 (用户, 应用) 最多能存多少个键。
-//
-// 为什么必须有：写接口对已装应用是**完全开放**的（沙箱里一个 for 循环就能一直 PUT），
-// 之前只有「单条 200KB」的上限、没有条数上限，于是一个跑飞的循环可以把这张表写满，
-// 而 `GET /:appId`（沙箱 cloud.list）会把**全部**键一次性回给客户端 —— 列表接口本身
-// 也就成了放大器。参照同仓库其他接口的既有做法（MAX_BATCH_SONGS / MAX_BATCH_IDS /
-// MAX_BUFFER_KEYS），这里也明确给一个上限并如实报错，而不是静默丢弃。
-// 真实用途（播放进度、表单草稿、少量偏好）离 200 个键很远。
+// 限制每个用户、每个应用的键数量，约束存储量和列表返回规模。
 const MAX_KEYS_PER_APP = 200;
 
 function readKey(raw) {

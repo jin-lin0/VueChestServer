@@ -3,17 +3,6 @@ const assert = require("node:assert/strict");
 const express = require("express");
 const { Op } = require("sequelize");
 
-/**
- * 题目 / 分类路由的写入收口。
- *
- * 本文件验证三件事（都是「接口参数最小化」的直接要求）：
- *  1. req.body 不再直通 Sequelize —— id / createdAt 这类非白名单字段进不去；
- *  2. 文本字段传非字符串时返回 400，而不是 `xxx.trim is not a function` 的 500（还会把原始报错回给客户端）；
- *  3. 分类必须真实存在，不建孤儿题目。
- *
- * 数据库与鉴权按项目既有测试做法换成桩：这里测的是路由的参数收口，
- * 不是复测 Sequelize 或 JWT 解析本身。
- */
 async function withQuestionRouter(run, options = {}) {
   const paths = {
     auth: require.resolve("../middleware/auth"),
@@ -320,14 +309,6 @@ test("随机抽题数量同样收口：负数与非数字都按 1 处理", async
   }
 });
 
-/**
- * 批量删除的 N+1 与「如实汇报」门禁。
- *
- * 前端原来勾中 N 道就发 N 个 DELETE /api/questions/:id（Promise.all）。除了 N 个
- * HTTP + N 条 SQL，那里还有个更难看的正确性问题：只要有一个 reject 就整体提示
- * 「批量删除失败」，可前面已经删掉的那些是真删了 —— 管理员重试一次，列表又少几行。
- * 这里把「一次请求 + 返回真实删除数」钉住。
- */
 test("批量删除只发一次 destroy，不按 id 逐个删", async (t) => {
   await withQuestionRouter(
     async (baseUrl, calls) => {

@@ -6,9 +6,7 @@ const { createTtlCache } = require("../utils/ttlCache");
 
 const router = express.Router();
 
-// 本路由不要求登录（游客也能查行情），但每个未命中缓存的请求都会以本服务的出口 IP 打腾讯。
-// 缓存只有 256 条，随机 symbol 可以稳定绕过缓存，所以需要一层按 IP 的请求额度兜底；
-// 额度按「股票页 60 秒轮询」的真实用量上取一个量级，取值与测算见 middleware/rateLimit.js。
+// 缓存未命中的请求仍会访问上游，因此保留独立的 IP 限流。
 router.use(createIpRateLimit({ scope: "行情接口" }));
 
 const REQUEST_TIMEOUT_MS = 10000;

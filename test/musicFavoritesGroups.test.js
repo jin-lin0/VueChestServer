@@ -4,22 +4,6 @@ const express = require("express");
 const { errorHandler } = require("../middleware/errorHandler");
 const { Op } = require("sequelize");
 
-/**
- * 音乐收藏「读取全部收藏组」的查询次数收口。
- *
- * 背景：GET /api/music-favorites/groups 原来是
- *   1 次 findOrCreate(默认组) + 1 次 findAll(分组) + N 次 findAll(各分组的歌曲)，
- * 即「3 + N」次**串行**往返。数据库在远端（热态约 47ms/次，见 config/database.js），
- * 分 5 组就是 ≈280ms 的白等。
- *
- * 本文件钉住三件事：
- *  1. 查询数固定为 2（分组一次 + 歌曲一次），不随分组数增长；
- *  2. 歌曲是按 groupId 归桶的、顺序与「逐组查询」完全一致（id ASC）；
- *  3. 默认组的补建只在**真的没有默认组**时发生，不再每次请求都白跑一次 SELECT。
- *
- * 数据库与鉴权按项目既有做法换成 require.cache 桩：这里测的是查询形状，
- * 不是复测 Sequelize / JWT。
- */
 async function withMusicFavoritesRouter(run, options = {}) {
   const paths = {
     auth: require.resolve("../middleware/auth"),
@@ -82,8 +66,7 @@ async function withMusicFavoritesRouter(run, options = {}) {
   const app = express();
   app.use(express.json());
   app.use("/api/music-favorites", router);
-  // 挂**生产用的**错误处理器：路由现在把未预期的异常交给 next(e) 统一分发，
-  // 不挂就只能落到 Express 默认处理器（500 + HTML），钉不住「不回显驱动原文」这条契约。
+  // 使用真实错误中间件验证状态码及脱敏响应。
   app.use(errorHandler);
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));

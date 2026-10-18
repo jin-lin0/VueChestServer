@@ -4,17 +4,6 @@ const express = require("express");
 
 const { errorHandler } = require("../middleware/errorHandler");
 
-/**
- * `/api/netease/*` 上游结果缓存的回归门禁。
- *
- * 为什么需要它：这层缓存「写错了不会报错」——不缓存只是慢，缓存错了才会出事，
- * 而最容易出事的三类恰好都没有任何外部症状：
- *   1. 把**带时效的签名播放地址**（`song_url`）缓存住 → 过一会儿所有人拿到死链；
- *   2. 缓存 key 不含上游方法名 → 两个接口互相返回对方的数据（`{}` 参数的那几个尤其危险）；
- *   3. 把**失败**也写进缓存 → 上游抖一下，整个 TTL 内所有人一起失败。
- * 所以逐条钉住。缓存器本身的语义在 test/ttlCache.test.js 里单独覆盖。
- */
-
 /** routes/netease.js 里的单条上限，改它必须同时改这里（下面的用例会因此变红）。 */
 const CACHE_MAX_VALUE_BYTES = 512 * 1024;
 
@@ -48,9 +37,7 @@ async function withStubs(modules, reload, run) {
   try {
     await run(app, base);
   } finally {
-    // 先掐断所有连接再 close：本文件里有「上游故意挂住」的并发用例，
-    // 断言若在挂住期间失败，悬着的请求会让 server.close() 永不回调 ——
-    // 失败会表现成进程卡死而不是一条红用例。
+    // 先断开悬挂请求，避免失败用例阻塞 server.close。
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
     for (const [path, cached] of previous) {
@@ -60,12 +47,7 @@ async function withStubs(modules, reload, run) {
   }
 }
 
-/**
- * 起一个上游替身：记录每次调用的 (方法名, 参数)，由 `responder` 决定这次返回什么。
- * `responder(name, params, nth)` 返回 `{ body }` 表示成功，返回 `{ reject }` 表示按上游的方式失败
- * （`NeteaseCloudMusicApi` 失败时 reject 的是 `{ status, body }` 普通对象，不是 Error）。
- * `responder` 允许是 async，用于制造「上游还没回来」的窗口。
- */
+/** 记录上游方法及参数；responder 返回 body 或 reject，也可异步挂起请求。 */
 async function withNeteaseRouter(responder, run) {
   const calls = [];
   const upstream = new Proxy(
@@ -303,8 +285,7 @@ test("超过上限的大响应不入缓存（仍然照常完整返回给调用�
 });
 
 test("383KB 级的响应仍然缓存（新歌速递实测就是这么大，不能把它挡在缓存外）", async () => {
-  // 真实 `/top/song?type=0` 实测 383KB，是本路由最慢的接口。
-  // 这条用例保证「把上限压到 383KB 以下」会立刻变红，而不是悄悄退化成不缓存。
+  // 使用较大的目录响应验证缓存容量边界。
   const REAL_TOP_SONG_BYTES = 383 * 1024;
   await withNeteaseRouter(
     (_name, _params, nth) => ({ body: { nth, blob: "x".repeat(REAL_TOP_SONG_BYTES - 200) } }),

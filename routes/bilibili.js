@@ -50,38 +50,9 @@ function createSseSession(req, res) {
 }
 
 /**
- * B站字幕提取接口
- * -------------------------------------------------------------
- * 本模块提供两个接口，配合前端「先选分P、再提取字幕」的交互：
- *
- *   POST /api/bilibili/info      { url, sessdata? }
- *        └─ 调 view 接口拿到视频标题 + 完整分P列表 pages[]（每个分P一个 cid）
- *        └─ 返回给前端，用于渲染「分P选择器」（含「全部P」选项）
- *
- *   POST /api/bilibili/subtitle  { bvid, cid?, all?, sessdata? }
- *        └─ 单P：传 cid，提取该分P字幕
- *        └─ 全P：传 all=true，遍历 pages 逐个提取，返回 pages 数组
- *
- * 单条分P的字幕提取流程（extractOnePage）：
- *
- *   1. player 接口    x/player/wbi/v2?bvid=xxx&cid=xxx&w_rid=签名
- *        └─ 经 WBI 签名后请求，拿到该分P的字幕列表 subtitles[]
- *
- *   2. 选轨道          优先 中文(zh-CN/zh-Hans) → AI 中文(ai-zh) → 第一条
- *
- *   3. 下载 bcc        subtitle_url 指向一个 JSON 字幕文件（B站自定义格式）
- *        └─ 把 body[].content 按顺序拼成纯文本 / 带时间戳文本后返回
- *
- * 关于 bvid 与 cid：
- *   bvid 是「作品级」唯一 ID（URL 里的 BV 号）；cid 是「分P级」播放 ID。
- *   一个 bvid 可能对应多个 cid（多P 视频每P一个），字幕挂在 cid 上，
- *   所以必须先用 view 接口拿到 pages[]，才能知道有哪些 cid 可取。
- *
- * 为什么需要 WBI 签名？
- *   B站自 2023 年起对 player 类接口加了 WBI（Web-Interface）签名校验，
- *   query 里必须带 w_rid（签名）和 wts（时间戳），否则返回 -412。
- *   签名 = md5(排序后的 query 串 + mixinKey)，mixinKey 由 nav 接口下发的
- *   两张图片(img_url / sub_url)的文件名按固定表重排得到，约 10 分钟有效，故做缓存。
+ * 视频信息接口返回标题和分 P 列表；字幕接口按 cid 提取单 P，或遍历全部 pages。
+ * bvid 标识视频，cid 标识分 P，字幕按 cid 查询。
+ * player 请求使用 WBI 签名；字幕轨道依次选择中文、AI 中文、首条可用轨道。
  */
 
 const UA =
@@ -146,13 +117,9 @@ async function sign(params) {
   return { ...merged, w_rid: md5(query + mixinKey) };
 }
 
-// 解析最终生效的 SESSDATA：优先用用户自己填的，其次回落到服务端 .env 里配置的
-// 公共 SESSDATA（BILI_SESSDATA）。这样用户不填也能解锁需登录才可见的 AI 字幕，
-// 而愿意填的用户仍走自己的账号（分摊风控压力、不共用站长凭证）。
+// 优先使用用户提供的 SESSDATA，再使用服务端已有配置。
 function resolveSessdata(sessdata) {
-  // 类型守卫：这两个路由**不需要登录**，sessdata 直接来自请求体。
-  // 写成 `(sessdata || "").trim()` 时，传数字/对象会抛 `trim is not a function`，
-  // 被全局错误处理兜成 500 并把原始报错文本回给客户端。
+  // 请求体先做类型校验，再调用字符串方法。
   const own = typeof sessdata === "string" ? sessdata.trim() : "";
   if (own) return own;
   return (process.env.BILI_SESSDATA || "").trim();
@@ -168,9 +135,7 @@ function buildHeaders(sessdata) {
   return headers;
 }
 
-// 统一的 JSON 请求：先读文本，若响应是 HTML（B站风控墙 / 登录墙）则抛出可读错误，
-// 否则 JSON.parse。避免 res.json() 遇到 HTML 抛出不友好的 "Unexpected token <"，
-// 且不会因 content-type 非 application/json（如 bcc 字幕文件）而误判。
+// 先读文本再解析 JSON，兼容 bcc 的 content-type，并识别上游 HTML 错误页。
 async function fetchJson(url, options = {}) {
   const res = await fetch(url, options);
   const text = await res.text();
@@ -185,9 +150,7 @@ async function fetchJson(url, options = {}) {
   }
 }
 
-// 步骤一：调 view 接口拿到视频标题 + 完整分P列表。
-// 关键：多P 视频的所有 cid 都在 data.pages[] 里，data.cid 只是第1P，
-// 因此必须遍历 pages 才能拿到全部分P，不能只取 data.cid。
+// 完整分 P 列表来自 data.pages，data.cid 仅代表第一 P。
 async function fetchView(bvid, sessdata) {
   const headers = buildHeaders(sessdata);
   const view = await fetchJson(
@@ -303,9 +266,7 @@ async function extractSubtitle(bvid, sessdata, { cid, all } = {}) {
   return { title, bvid, all: false, ...pageInfo, ...r };
 }
 
-// 路由1：解析视频信息（拿标题 + 分P列表），供前端渲染分P选择器
-// POST /api/bilibili/info  { url, sessdata? }
-// 错误无需本地 try/catch —— 冒泡到全局错误处理中间件（index.js）统一返回 { error, code }
+// 视频信息与分 P 列表；错误统一交给全局中间件。
 router.post("/info", async (req, res) => {
   const { url, sessdata } = req.body || {};
   // 同上：url 非字符串时 `.match` 会抛 TypeError；这里统一按「链接不合法」处理

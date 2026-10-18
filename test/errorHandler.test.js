@@ -133,12 +133,7 @@ test("无 message 的错误也有兜底文案", () => {
   assert.equal(describeError(null).status, 500);
 });
 
-/* ------------------------------------------------------------------ *
- * 输入类错误（调用方改一下请求就能过）应当给 400，而不是「服务器内部错误」
- *
- * 下面这些错误的**形状**都是在真实 MySQL 上抓下来的，不是照文档臆造的。
- * sql_mode 含 STRICT_TRANS_TABLES，所以超长/非法取值一律报错、不会静默截断。
- * ------------------------------------------------------------------ */
+/* 模拟严格模式下的数据库输入错误，验证状态码与脱敏响应。 */
 
 /** 造一个驱动程序抛出的真实形状：Sequelize 把 mysql2 的原始错误挂在 parent 上。 */
 function driverError(code, sqlMessage) {
@@ -161,7 +156,7 @@ function validationError(items, message = "Validation error") {
 }
 
 test("超长字段（模型层 len 校验）给 400，并指出是哪个字段", () => {
-  // 实测：username 传 200 字 → Validation len on username failed
+
   const { status, body } = capture(
     validationError([
       {
@@ -183,7 +178,7 @@ test("超长字段（模型层 len 校验）给 400，并指出是哪个字段",
 });
 
 test("必填字段缺失（notNull 违例）给 400，而不是 500", () => {
-  // 实测：icon=null → {"path":"icon","validatorKey":"is_null","type":"notNull Violation"}
+
   const { status, body } = capture(
     validationError([
       { path: "icon", validatorKey: "is_null", type: "notNull Violation" },
@@ -218,7 +213,7 @@ test("拿不到字段名时也给 400，不编造字段", () => {
 });
 
 test("内容超出列宽（ER_DATA_TOO_LONG）给 400 并指出列名", () => {
-  // 实测：description 传 70000 字 → ER_DATA_TOO_LONG / errno 1406
+
   const { status, body } = capture(
     driverError("ER_DATA_TOO_LONG", "Data too long for column 'description' at row 1"),
   );
@@ -230,7 +225,7 @@ test("内容超出列宽（ER_DATA_TOO_LONG）给 400 并指出列名", () => {
 });
 
 test("ENUM 传非法取值（WARN_DATA_TRUNCATED）给 400", () => {
-  // 实测：status='bogus-status' → WARN_DATA_TRUNCATED / errno 1265
+
   const { status, body } = capture(
     driverError("WARN_DATA_TRUNCATED", "Data truncated for column 'status' at row 1"),
   );

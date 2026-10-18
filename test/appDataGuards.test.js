@@ -8,27 +8,6 @@ const HARNESS_MARK = "app-data-harness";
 // 当前正在用的端口（测试在文件内是顺序执行的，用它给失败信息定位）。
 let currentPort = 0;
 
-/**
- * `routes/appData.js`（沙箱 `__VueChest__.cloud.*` 的后端）的两处收口：
- *
- * 1) 路径里的应用 id 判据。
- *    原来是 `Number.parseInt(raw, 10)`：
- *      parseInt("1.5")  → 1     拿调用方指定的 id 去操作**另一个**应用的数据；
- *      parseInt("1e3")  → 1     同上；
- *      parseInt("1abc") → 1     同上。
- *    这个接口对已装应用完全开放，appId 是应用自己拼进 URL 的，写成 "1.5" 完全可能
- *    （例如把某个数字格式化后再拼）。作用域仍是当前用户，所以不是越权，但
- *    「读写的是另一个应用的数据」且**没有任何报错**，属于最难查的那种错。
- *    判据已提到 utils/queryParams.js 的 isPositiveIntParam（musicFavorites 同一份）。
- *
- * 2) 键数量上限。
- *    原本只有「单条 200KB」的上限，没有条数上限：一个跑飞的循环（或在沙箱里
- *    无限 PUT）可以把这张表写满，而 GET /:appId（cloud.list）会把全部键一次性返回，
- *    列表接口本身也成了放大器。现在超过 MAX_KEYS_PER_APP 回 409 且**不留半截状态**。
- *
- * 数据库按项目既有做法换成 require.cache 桩：这里测的是判据与配额的分支，
- * 不是复测 Sequelize。
- */
 async function withRouter(run, options = {}) {
   const paths = {
     auth: require.resolve("../middleware/auth"),
@@ -120,9 +99,7 @@ async function withRouter(run, options = {}) {
   app.use(errorHandler);
   const server = app.listen(0, "127.0.0.1");
 
-  // 必须等 listening 再读端口：`listen(0, "127.0.0.1")` 指定了 host 之后绑定是**异步**的，
-  // 同步读 `server.address()` 会拿到 null。读端口也必须放在 try 里 ——
-  // 否则从这里抛错会跳过 finally，服务器永不关闭，整个测试进程挂着不退。
+  // 监听完成后再读取端口，并确保失败路径关闭服务器。
   try {
     await new Promise((resolve) => server.once("listening", resolve));
     currentPort = server.address().port;
@@ -138,16 +115,7 @@ async function withRouter(run, options = {}) {
   }
 }
 
-/**
- * 断言状态码，失败时把**响应体**与**来源**一起报出来。
- *
- * 为什么要这么写：这套测试是「进程内起服务器 + fetch」。曾经出现过只看到
- * `403 !== 400` 的偶发失败，查不下去；根因是 `app.listen(0)` 默认绑 `::`（IPv6 双栈），
- * 而 macOS 允许同一端口号上 `[::]:P` 与 `127.0.0.1:P` **两个监听并存**，回环流量归更具体的
- * `127.0.0.1`。并行跑测试文件时端口号一旦撞上，本装置就会收到**另一个进程的响应**。
- * 现在统一改成 `app.listen(0, "127.0.0.1")`（同地址不可能并存，实测 EADDRINUSE），
- * 同时保留 x-harness 标识：万一再出现「非本装置」的响应，失败信息会直接点出来。
- */
+/** 断言失败时同时报告响应体和测试服务标识，帮助定位响应来源。 */
 async function expectStatus(res, want, message) {
   const body = await res.text();
   const who = res.headers.get("x-harness");
@@ -302,7 +270,6 @@ test("单条数据边界：恰好 200000 字符放行", async () => {
     assert.equal(calls.create.length, 1);
   });
 });
-
 
 test("只剩一个名额时并发新增不会超额，且不会删掉成功的键", async () => {
   await withRouter(async (base, calls) => {

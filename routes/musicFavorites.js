@@ -15,21 +15,8 @@ async function ensureDefaultGroup(userId) {
   return group;
 }
 
-// 读取某用户全部收藏组，并附带各自歌曲。
-//
-// 查询数从「3 + N」降到「2」（N = 分组数）：
-//  - 原来每读一个分组就单独 findAll 一次歌曲，每个分组都是**一次到远端 MySQL 的往返**
-//    （热态约 47ms，实测见 config/database.js 的注释）。用户分 5 组就是 6 次串行往返 ≈ 280ms。
-//  - 原来还无条件先跑一次 ensureDefaultGroup（findOrCreate = SELECT + 可能的 INSERT），
-//    而它的 SELECT 与下面 findAll 读的是同一张表同一批行，纯属重复。
-//
-// 现在：
-//  1. 先一次性把该用户的全部分组取回来（1 次查询），默认组在不在顺便就知道了，
-//     只有「确实没有默认组」时才补建（每个用户一生只发生一次）；
-//  2. 再用 `groupId IN (...)` 一次把全部歌曲取回来（1 次查询），在内存里按 groupId 归桶。
-//
-// 顺序不变：外层按 isDefault DESC / id ASC，内层歌曲按 id ASC；
-// 全局按 id ASC 取回后再归桶，每个分组内的歌曲顺序与逐组查询完全一致。
+// 分组和歌曲各查询一次，再按 groupId 分组；仅缺少默认组时补建。
+// 分组按 isDefault DESC / id ASC、歌曲按 id ASC 保持顺序。
 async function loadGroupsWithSongs(userId) {
   let groups = await MusicFavoriteGroup.findAll({
     where: { userId },
@@ -74,11 +61,7 @@ router.get("/groups", authMiddleware, async (req, res, next) => {
     const groups = await loadGroupsWithSongs(req.user.id);
     res.json({ success: true, data: groups });
   } catch (e) {
-    // 交给全局错误处理（middleware/errorHandler.js）：它会把「调用方输入有问题」的驱动报错
-    // 翻成 400，并且**不回显驱动原文**。这里原来是
-    //   res.status(500).json({ success: false, error: e.message, ... })
-    // 实测会把 "Data too long for column 'songData' at row 1" 这类报文原样漏给客户端，
-    // 正是 errorHandler 头注释里点名要防的那类泄漏。
+
     next(e);
   }
 });
@@ -114,11 +97,7 @@ router.post("/groups", authMiddleware, async (req, res, next) => {
       data: { id: group.id, name: group.name, isDefault: false, songs: [] },
     });
   } catch (e) {
-    // 交给全局错误处理（middleware/errorHandler.js）：它会把「调用方输入有问题」的驱动报错
-    // 翻成 400，并且**不回显驱动原文**。这里原来是
-    //   res.status(500).json({ success: false, error: e.message, ... })
-    // 实测会把 "Data too long for column 'songData' at row 1" 这类报文原样漏给客户端，
-    // 正是 errorHandler 头注释里点名要防的那类泄漏。
+
     next(e);
   }
 });
@@ -126,10 +105,7 @@ router.post("/groups", authMiddleware, async (req, res, next) => {
 // 删除收藏分组（默认组不可删）
 router.delete("/groups/:id", authMiddleware, async (req, res, next) => {
   try {
-    // 只接受十进制正整数：`parseInt("1.5")` 会读成 1，等于拿别人指定的 id 去操作**另一个**分组；
-    // `parseInt("abc")` 是 NaN，塞进 WHERE 会变成
-    //   {"error":"Unknown column 'NaN' in 'where clause'"}
-    // 的 500，顺带把 SQL 片段漏给客户端。判据与批量加歌那条统一。
+
     if (!isPositiveIntParam(req.params.id)) {
       return res
         .status(404)
@@ -157,29 +133,17 @@ router.delete("/groups/:id", authMiddleware, async (req, res, next) => {
     await group.destroy();
     res.json({ success: true, data: { id: groupId } });
   } catch (e) {
-    // 交给全局错误处理（middleware/errorHandler.js）：它会把「调用方输入有问题」的驱动报错
-    // 翻成 400，并且**不回显驱动原文**。这里原来是
-    //   res.status(500).json({ success: false, error: e.message, ... })
-    // 实测会把 "Data too long for column 'songData' at row 1" 这类报文原样漏给客户端，
-    // 正是 errorHandler 头注释里点名要防的那类泄漏。
+
     next(e);
   }
 });
 
-// 单次批量加歌的上限。歌单是「首次登录把本地收藏迁移进账号」这一个调用方，
-// 本地收藏理论上可以堆积到任意多，所以两点都要有：
-//  - 服务端设硬上限（防一次请求塞进超大 body / 超长 SQL）；
-//  - 客户端按这个数分批（见 VueChest/src/stores/music.ts 的 migrateLocalFavorites）。
+// 批量写入设置服务端上限，客户端分批迁移。
 const MAX_BATCH_SONGS = 200;
 // 与模型 songId 的 STRING(64) 对齐：更长的 id 到 MySQL 会被静默截断，
 // 截断后可能撞上 (groupId, songId) 唯一索引，变成一条看不懂的冲突。
 const MAX_SONG_ID_LENGTH = 64;
-// 单首歌曲序列化后的字节上限，与模型 songData 的 TEXT(65535 字节) 对齐。
-// 为什么必须在进库前拦：songData 存的是客户端传来的整个 song 对象，而 TEXT 有 64KB 硬上限，
-// 超了 MySQL 会拒绝整条 INSERT。实测过这条路上原来漏出去的报文是
-//   {"error":"Data too long for column 'songData' at row 1"}
-// ——列名和 MySQL 原文一起给了客户端。这里用 API 自己的字段名拦下来，客户端才知道改哪里。
-// 数值与模型耦合，test/musicFavoritesBatchSongs.test.js 里有防漂移断言。
+// 按序列化字节数限制歌曲大小，与 songData 的 TEXT 列容量保持一致。
 const MAX_SONG_DATA_BYTES = 65535;
 
 /** 序列化后的字节数；无法序列化（循环引用等）返回 null。 */
@@ -198,12 +162,7 @@ function songFitsColumn(song) {
   return bytes !== null && bytes <= MAX_SONG_DATA_BYTES;
 }
 
-// 批量添加歌曲（首次登录把本地收藏迁移进账号时用）
-//
-// 为什么需要这个接口：单条加歌是 `findOrCreate` = SELECT + INSERT 两次往返，
-// N 首就是 2N 次，且前端只能串行 await（否则同组写入互相抢唯一索引）。
-// 本地收藏上百首时首次登录要等十几秒。批量版固定 3 次查询：
-//   1) 分组归属校验  2) 一次 `songId IN (...)` 读出已存在的  3) 一次 bulkCreate 插入缺的。
+// 批量添加收藏：校验分组归属、读取已有歌曲，再一次性插入缺失记录。
 router.post("/groups/:id/songs/batch", authMiddleware, async (req, res, next) => {
   try {
     if (!isPositiveIntParam(req.params.id)) {
@@ -231,9 +190,7 @@ router.post("/groups/:id/songs/batch", authMiddleware, async (req, res, next) =>
       if (song.id === undefined || song.id === null) continue;
       const songId = String(song.id);
       if (!songId.trim() || songId.length > MAX_SONG_ID_LENGTH) continue;
-      // 体积超限直接整条请求 400，而不是默默跳过这一首：
-      // 一次批量就是一条原子 INSERT，本来就不存在「部分成功」；
-      // 而吞掉它会让 requested/added/skipped 三个数看起来完全正常，客户端以为迁移完了。
+      // 超限记录使整批请求失败，避免静默跳过后被客户端误判为已迁移。
       if (!songFitsColumn(song)) {
         return res.status(400).json({
           success: false,
@@ -299,11 +256,7 @@ router.post("/groups/:id/songs/batch", authMiddleware, async (req, res, next) =>
       },
     });
   } catch (e) {
-    // 交给全局错误处理（middleware/errorHandler.js）：它会把「调用方输入有问题」的驱动报错
-    // 翻成 400，并且**不回显驱动原文**。这里原来是
-    //   res.status(500).json({ success: false, error: e.message, ... })
-    // 实测会把 "Data too long for column 'songData' at row 1" 这类报文原样漏给客户端，
-    // 正是 errorHandler 头注释里点名要防的那类泄漏。
+
     next(e);
   }
 });
@@ -311,10 +264,7 @@ router.post("/groups/:id/songs/batch", authMiddleware, async (req, res, next) =>
 // 向某分组添加歌曲
 router.post("/groups/:id/songs", authMiddleware, async (req, res, next) => {
   try {
-    // 只接受十进制正整数：`parseInt("1.5")` 会读成 1，等于拿别人指定的 id 去操作**另一个**分组；
-    // `parseInt("abc")` 是 NaN，塞进 WHERE 会变成
-    //   {"error":"Unknown column 'NaN' in 'where clause'"}
-    // 的 500，顺带把 SQL 片段漏给客户端。判据与批量加歌那条统一。
+
     if (!isPositiveIntParam(req.params.id)) {
       return res
         .status(404)
@@ -365,10 +315,7 @@ router.post("/groups/:id/songs", authMiddleware, async (req, res, next) => {
 // 从某分组移除歌曲
 router.delete("/groups/:id/songs/:songId", authMiddleware, async (req, res, next) => {
   try {
-    // 只接受十进制正整数：`parseInt("1.5")` 会读成 1，等于拿别人指定的 id 去操作**另一个**分组；
-    // `parseInt("abc")` 是 NaN，塞进 WHERE 会变成
-    //   {"error":"Unknown column 'NaN' in 'where clause'"}
-    // 的 500，顺带把 SQL 片段漏给客户端。判据与批量加歌那条统一。
+
     if (!isPositiveIntParam(req.params.id)) {
       return res
         .status(404)
@@ -387,11 +334,7 @@ router.delete("/groups/:id/songs/:songId", authMiddleware, async (req, res, next
     await MusicFavoriteSong.destroy({ where: { groupId, songId } });
     res.json({ success: true, data: { groupId, songId } });
   } catch (e) {
-    // 交给全局错误处理（middleware/errorHandler.js）：它会把「调用方输入有问题」的驱动报错
-    // 翻成 400，并且**不回显驱动原文**。这里原来是
-    //   res.status(500).json({ success: false, error: e.message, ... })
-    // 实测会把 "Data too long for column 'songData' at row 1" 这类报文原样漏给客户端，
-    // 正是 errorHandler 头注释里点名要防的那类泄漏。
+
     next(e);
   }
 });

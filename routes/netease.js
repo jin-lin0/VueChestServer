@@ -8,20 +8,7 @@ const { createTtlCache } = require("../utils/ttlCache");
 // 没有额度时它就是一台免费公共代理，故加一层按 IP 的请求额度；额度取值见 middleware/rateLimit.js。
 router.use(createIpRateLimit({ scope: "音乐接口" }));
 
-// ===== 上游结果缓存 =====
-//
-// 为什么要缓存：音乐页首屏一次并发打 7 个本路由的接口，每个未命中都是一次出网往返
-// （实测 80~340ms）。前端 `src/lib/musicApi.ts` 自己有一层 5 分钟内存缓存，但那是
-// **按会话**的：每次整页刷新（深链接、刷新、新设备）都从零开始，缓存全部落空。
-// 后端这一层是跨刷新、跨用户的，同时也是对那台免费公共上游的保护——
-// 上游一旦因为请求量被限流，整个音乐应用就一起哑掉。
-//
-// 只缓存**只读、与用户身份无关**的结果。明确不缓存的见 CACHE_TTL_BY_API 的注释。
-//
-// maxValueBytes 的取值依据：本路由最大的两个响应是新歌速递（`type=0` 实测 383KB）
-// 和榜单列表（89KB），它们恰好是最慢的两个，所以上限必须容得下 383KB；
-// 取 512KB 留一点余量，同时把「某个超大歌单详情」挡在缓存外。条数 48
-// 与 512KB 相乘是内存上界的最坏情况，实际工作集（一次听歌会话）通常只有十几条。
+// 仅缓存与用户身份无关的只读结果，并限制条数及单条序列化字节数。
 const NETEASE_CACHE_MAX_ENTRIES = 48;
 const NETEASE_CACHE_MAX_VALUE_BYTES = 512 * 1024;
 const catalogCache = createTtlCache({
@@ -35,15 +22,8 @@ const TTL_CATALOG = 10 * 60 * 1000;
 const TTL_TAXONOMY = 30 * 60 * 1000;
 
 /**
- * 哪些上游方法可以缓存、各自 TTL 多少。
- *
- * 这是一份**白名单**：没列进来的方法一律直连上游、不缓存。这样以后新加接口时，
- * 默认是「不缓存」这个安全的错，而不是「悄悄缓存了带时效的东西」。
- *
- * 三个必须留在名单外的，各自原因不同，都不是「暂时没加」：
- *   - `search`        关键字基数无上限，且用户对搜索结果的新鲜度有预期；
- *   - `search_suggest` 随输入逐字变化，缓存只会制造「改了字还看到旧建议」的错觉；
- *   - `song_url`      **返回的是签过名、带时效的播放地址**，缓存等于把过期链接发出去。
+ * 缓存采用白名单：未列出的方法直连上游。
+ * 搜索和联想保持即时查询；签名播放地址不缓存，避免过期链接。
  */
 const CACHE_TTL_BY_API = {
   personalized: TTL_CATALOG,
@@ -62,16 +42,7 @@ const CACHE_TTL_BY_API = {
   lyric: TTL_TAXONOMY,
 };
 
-/**
- * `NeteaseCloudMusicApi` 失败时 reject 的是它自己的 `{ status, body, cookie }` 普通对象，
- * 不是 Error（见该包 `util/request.js` 的 reject(answer)）。直接交给 errorHandler 会有两个问题：
- *
- * 1. 它没有 message 字段，最后会回一句「服务器内部错误」，把「上游不可用」说成了本服务的 bug；
- * 2. 它的 `status` 是上游给的状态码（可能是 400/404），于是**上游的毛病会以 4xx 的形式
- *    回给调用方**，看起来像客户端请求有错。
- *
- * 所以这里统一换成 502 + 稳定文案。原始信息只进服务端日志（本路由免登录，不外发）。
- */
+/** 上游可能拒绝普通对象；统一转为 502/504，保留稳定文案并隐藏原始响应。 */
 function musicUpstreamError(error) {
   const status = error?.status === 504 ? 504 : 502;
   const wrapped = new Error("音乐服务暂时不可用，请稍后重试");
@@ -87,12 +58,7 @@ async function callUpstream(name, params) {
   return result.body;
 }
 
-/**
- * 统一的「转发上游」出口：能缓存的走缓存，不能缓存的直连；失败一律规范化后交给 errorHandler。
- *
- * 缓存 key 用 `名字|JSON.stringify(params)`。**依赖调用点用对象字面量按固定顺序构造 params**
- * ——同一组参数换个书写顺序就会算出不同 key（只是少命中一次，不会串数据，因为名字在前缀里）。
- */
+/** 缓存键依赖 params 的属性顺序，调用方应按固定顺序构造参数。 */
 async function forward(res, next, name, params) {
   const ttl = CACHE_TTL_BY_API[name];
   let body;

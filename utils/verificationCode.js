@@ -1,16 +1,5 @@
-// 验证码内存存储（带 TTL + 重发冷却 + 条目上限）
-// 注意：内存存储适用于单实例部署；多实例/Serverless 环境建议改用 Redis 或数据库存储。
-//
-// 三条与 utils/authThrottle.js 对齐的取舍：
-//
-// 1. 惰性清扫 + 硬容量上限，**不挂后台定时器**。原来用 setInterval 每 10 分钟清一次；
-//    模块一旦被重新加载（测试里 delete require.cache、热重载、将来换 ESM），
-//    就会多留下一份定时器，而它扫的还是旧闭包里的那个 Map —— 既漏扫又常驻。
-// 2. 条目数是硬上限。发送入口虽然是「登录前」，但按 IP 的邮件闸门是 5 次/小时，
-//    换 IP（或直连源站时伪造 XFF）就能持续写入；没有上限的表最终会把进程撑死。
-//    淘汰按插入顺序，摊还下来每次写入仍是 O(1)。
-// 3. 「判能不能发」与「真去写」分成两个函数。`cooldownRemaining()` 只读，
-//    让调用方能在被别的闸门拒绝时**不留下任何状态改动**（见 routes/auth.js）。
+// 验证码按用途隔离，带 TTL、重发冷却和容量上限，采用惰性清理。
+// 存储仅在当前进程有效，多实例共享需外部存储。
 const crypto = require("crypto");
 
 const CODE_TTL_MS = 5 * 60 * 1000; // 验证码有效期 5 分钟
@@ -30,10 +19,7 @@ let opsSinceSweep = 0;
 const keyOf = (email, type) => `${type}:${String(email).toLowerCase().trim()}`;
 const isStale = (entry, now) => now > entry.expiresAt + VERIFY_WINDOW_MS;
 
-/**
- * 写入之后的维护：惰性清扫过期条目 + 硬容量淘汰。
- * 与 utils/authThrottle.js 的 sweepExpired/enforceCapacity 同一套语义。
- */
+/** 写入后清理过期条目，并按插入顺序控制容量。 */
 function maintain(now) {
   opsSinceSweep += 1;
   if (opsSinceSweep >= SWEEP_INTERVAL) {
@@ -61,15 +47,10 @@ function generate6DigitCode() {
 }
 
 /**
- * 只读：距可以再次发送还需等待多少毫秒（0 表示现在就能发）。
- *
- * 存在的意义是让调用方在「还要不要继续」的判定上**不改动状态**：
- * 被 IP 闸门拒绝的请求不该顺手铸掉新码、重记冷却（那会让用户手上那个
- * 已经收到、还没用掉的码作废，同时让重发谎报「验证码已发送」）。
- *
+ * 只读查询重发冷却，不生成新码或更新状态。
  * @param {string} email
  * @param {string} [type] 用途命名空间，须与 createCode 一致
- * @returns {number} 剩余冷却毫秒数
+ * @returns {number} 剩余冷却毫秒数，0 表示可发送
  */
 function cooldownRemaining(email, type = "register") {
   const entry = store.get(keyOf(email, type));

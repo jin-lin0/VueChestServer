@@ -28,9 +28,7 @@ function serializeNotification(row) {
   };
 }
 
-// 收口逻辑统一放在 utils/queryParams.js（routes/market.js、routes/users.js、routes/questions.js
-// 也用它）。这里曾经是第二份手写实现，而且 page 没有上限：
-// `?page=9.9e19` 会让 offset 溢出成非法 SQL → 500。
+// 通知列表复用有界分页参数。
 const clampPage = (value) => toBoundedInt(value, { fallback: 1, max: MAX_PAGE });
 const clampLimit = (value) =>
   toBoundedInt(value, { fallback: DEFAULT_PAGE_SIZE, max: MAX_PAGE_SIZE });
@@ -88,11 +86,7 @@ async function removeNotification(userId, id) {
   return deleted > 0;
 }
 
-/**
- * 创建站内通知。
- * 调用方通常在业务动作成功后调用；这里吞掉所有异常，
- * 保证「通知写不进去」永远不会让审核 / 评论等主流程失败。
- */
+/** 创建通知失败不影响主业务流程。 */
 async function createNotification(input = {}) {
   // 允许传入 null（buildXxx 判定「不该发」时会返回 null），此时静默跳过
   const { userId, type, title } = input || {};
@@ -120,10 +114,7 @@ async function createNotification(input = {}) {
   }
 }
 
-/**
- * 包一层兜底：通知是旁路逻辑，任何异常都不应该让审核 / 评论等主流程失败。
- * 调用处统一写成 `await safeNotify(notifyXxx(...))`。
- */
+/** 捕获旁路通知失败，避免影响主业务。调用方式：await safeNotify(notifyXxx(...))。 */
 function safeNotify(promise) {
   return Promise.resolve(promise).catch((error) => {
     console.warn("[notification] 通知流程异常：", error?.message || error);

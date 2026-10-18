@@ -4,18 +4,6 @@ const assert = require("node:assert/strict");
 const codes = require("../utils/verificationCode");
 const codePath = require.resolve("../utils/verificationCode");
 
-/**
- * `utils/verificationCode.js` 此前**没有任何单测**（全仓 grep 不到引用），
- * 而它是注册/重置密码这条链路上唯一的«能不能进下一步»的判据。
- *
- * 这里补两件事：
- *   1) 既有语义的钉子：6 位码、60 秒重发冷却、一次性使用、错误次数上限、
- *      有效期、type 命名空间隔离、邮箱归一。
- *   2) 本轮新增/改掉的行为：条目数**硬上限**、惰性清扫、
- *      **不再挂后台定时器**、`cooldownRemaining()` 只读。
- *
- * 时间用 `Date.now` 平移来跨，不 sleep（这套测试要能在 1 秒内跑完）。
- */
 
 function withClockShift(shiftMs, fn) {
   const real = Date.now;
@@ -31,11 +19,7 @@ function withClockShift(shiftMs, fn) {
 let ns = 0;
 const freshNs = () => `ns${++ns}`;
 
-/**
- * 拿一个**全新的模块实例**（store 与清扫计数器都归零）。
- * 「条目上限」「惰性清扫」这两条断言的是表的绝对大小，必须排除前面用例留下的条目，
- * 否则期望值会随用例执行顺序漂移。
- */
+/** 重新加载模块以隔离验证码记录和清理计数。 */
 function freshModule() {
   const cached = require.cache[codePath];
   delete require.cache[codePath];

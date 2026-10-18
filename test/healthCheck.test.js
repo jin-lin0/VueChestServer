@@ -6,13 +6,6 @@ const HEALTH_PATH = require.resolve("../routes/health");
 const DB_PATH = require.resolve("../config/database");
 const LOGGER_PATH = require.resolve("../middleware/visitLogger");
 
-/**
- * 健康检查的契约测试。
- *
- * 这条端点的历史问题是「假绿灯」：它只调 visitLogger.flushToDB()，而那个函数在
- * buffer 为空时直接 return（不碰数据库），单条写失败又在内层被 catch 吞掉，
- * 所以数据库挂了它照样回 status:"ok" + 200。
- */
 async function withHealth(stubs, run) {
   const previous = new Map();
   const targets = [DB_PATH, LOGGER_PATH];

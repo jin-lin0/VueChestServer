@@ -3,12 +3,7 @@ const assert = require("node:assert/strict");
 const express = require("express");
 const realClient = require("../services/westock/client");
 
-// 真实的 middleware/auth 会去连数据库校验 JWT 与会话，这里按项目既有测试做法换成桩：
-// 本文件验证的是「路由挂上了鉴权」「参数进不到 spawn」「路由到 CLI 的参数映射正确」，
-// 不是复测 jwt 解析本身（那属于 middleware/auth 的职责）。
-//
-// 注意：参数白名单在 client.runWestock 内部，所以默认**不**替换 client 模块，
-// 否则会连校验一起绕过去，测试变成自证。只有需要捕获调用参数的用例才传 options.client。
+// 替换鉴权依赖；默认保留真实 CLI 客户端，确保参数白名单参与测试。
 async function withWestockRouter(run, options = {}) {
   const authPath = require.resolve("../middleware/auth");
   const clientPath = require.resolve("../services/westock/client");

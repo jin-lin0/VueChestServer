@@ -4,24 +4,6 @@ const express = require("express");
 const { errorHandler } = require("../middleware/errorHandler");
 const MusicFavoriteSong = require("../models/musicFavoriteSong");
 
-/**
- * 音乐收藏**写路径**的两类收口：路径参数判据 + 异常分发。
- *
- * 1) 路径参数：三个 handler 原来都是 `const groupId = parseInt(req.params.id)`。
- *    - `parseInt("1.5")` / `parseInt("1e3")` 都读成 1 —— 拿调用方指定的 id 去操作**另一个**分组；
- *    - `parseInt("abc")` 是 NaN，直接进 WHERE，实测线上返回
- *        {"error":"Unknown column 'NaN' in 'where clause'","code":"SERVER_ERROR"}
- *      既报了个 500，又把「这个参数进了 SQL」和 SQL 片段一起漏给了客户端。
- *
- * 2) 异常分发：这些 handler 原来各自 `catch (e) { res.status(500).json({error: e.message}) }`，
- *    绕过全局错误处理。实测批量加歌传一首 70KB 的歌，回的是
- *      {"error":"Data too long for column 'songData' at row 1"}
- *    ——列名和 MySQL 原文原样外发，正是 middleware/errorHandler.js 头注释点名要防的泄漏。
- *    现在统一 next(e)：输入类报错 → 400，真正的服务端故障 → 500 且只回通用文案。
- *
- * 数据库按项目既有做法换成 require.cache 桩：这里测的是**分发与判据**，
- * 不是复测 Sequelize 的报错格式（那部分在 errorHandler 的测试里钉）。
- */
 async function withRouter(run, options = {}) {
   const paths = {
     auth: require.resolve("../middleware/auth"),
@@ -309,9 +291,7 @@ test("体积护栏：批量里有一首超限就整条 400，不落库", async (
 
 test("体积护栏按**字节**算，字符数没超但字节超了也要拦", async () => {
   const LIMIT = 65535;
-  // 22000 个汉字：字符数才 22000（远小于 65535），字节数却是 66000+。
-  // 如果护栏写成 `JSON.stringify(song).length > MAX`，这一首会被放行，
-  // 然后在库上以 "Data too long for column 'songData'" 报错——正是要避免的场景。
+  // 多字节文本字符数未超限但字节数超限，用于验证 TEXT 容量约束。
   const cjk = { id: "x", pad: "汉".repeat(22000) };
   const serialized = JSON.stringify(cjk);
   assert.ok(
