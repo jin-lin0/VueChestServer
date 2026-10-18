@@ -9,6 +9,7 @@ const { sendVerificationEmail, sendResetCodeEmail } = require("../utils/mail");
 const {
   createCode,
   verifyCode,
+  cooldownRemaining,
   CODE_TTL_MS,
   RESEND_COOLDOWN_MS,
 } = require("../utils/verificationCode");
@@ -23,11 +24,21 @@ const {
 } = require("../utils/cloudSync");
 const { createLoginSession } = require("../services/authSessionService");
 const { sanitizeWorkspaceConfig } = require("../utils/workspaceConfig");
+const {
+  clientIpOf,
+  loginAttemptKey,
+  loginBackoff,
+  loginIpLimiter,
+  mailIpLimiter,
+} = require("../utils/authThrottle");
+// 429 响应契约与未鉴权代理限流共用一处实现（默认 code 就是本文件一直用的 TOO_MANY_ATTEMPTS）。
+const { tooManyRequests } = require("../middleware/rateLimit");
 
 const router = express.Router();
 
 // 简单邮箱格式校验
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // 发送注册验证码
 router.post("/send-code", async (req, res) => {
   const { email } = req.body;
@@ -42,13 +53,19 @@ router.post("/send-code", async (req, res) => {
   // 检查邮箱是否已被注册
   const used = await User.findOne({ where: { email } });
   if (used) {
+    // 枚举同样计入 IP 配额：否则这里会变成免费的邮箱存在性扫描接口。
+    const gate = mailIpLimiter.hit(clientIpOf(req));
+    if (!gate.allowed) return tooManyRequests(res, gate.retryAfterMs, "验证码请求");
     return res.status(409).json({
       error: "该邮箱已被注册",
       code: "EMAIL_USED",
     });
   }
 
-  const { code, cooldown } = createCode(email);
+  // 先**只读地**判邮箱冷却。这一步既不能改状态、也不能消耗 IP 配额：
+  //   - 消耗配额 → 用户连点几下重发就把整点额度烧光，被锁一小时；
+  //   - 改状态（铸新码 + 重记冷却）→ 那就是下面 IP 闸门那条注释说的问题。
+  const cooldown = cooldownRemaining(email);
   if (cooldown > 0) {
     return res.status(429).json({
       error: `验证码已发送，请 ${Math.ceil(cooldown / 1000)} 秒后再试`,
@@ -56,6 +73,15 @@ router.post("/send-code", async (req, res) => {
       retryAfter: Math.ceil(cooldown / 1000),
     });
   }
+
+  // 按邮箱的 60 秒冷却挡不住「换邮箱」刷 Resend 额度，这里再加一层与收件人无关的 IP 上限。
+  // 必须早于 createCode：被这个闸门拒绝的请求要是已经铸了新码、重记了冷却，
+  // 用户手上那个还没用过的码就作废了（拿去注册会被判「验证码错误」），
+  // 而重发还会回「验证码已发送」——一封信都没发出去。
+  const gate = mailIpLimiter.hit(clientIpOf(req));
+  if (!gate.allowed) return tooManyRequests(res, gate.retryAfterMs, "验证码请求");
+
+  const { code } = createCode(email);
 
   const result = await sendVerificationEmail(email, code);
   if (!result.success) {
@@ -187,13 +213,17 @@ router.post("/forgot-password", async (req, res) => {
 
   const user = await User.findOne({ where: { email } });
   if (!user) {
+    const gate = mailIpLimiter.hit(clientIpOf(req));
+    if (!gate.allowed) return tooManyRequests(res, gate.retryAfterMs, "验证码请求");
     return res.status(404).json({
       error: "该邮箱未注册",
       code: "EMAIL_NOT_FOUND",
     });
   }
 
-  const { code, cooldown } = createCode(email, "reset");
+  // 与 /send-code 同序：只读判冷却 → IP 闸门 → 才写 store。
+  // 被拒绝的重置请求不该把用户手上那个重置码换掉。
+  const cooldown = cooldownRemaining(email, "reset");
   if (cooldown > 0) {
     return res.status(429).json({
       error: `验证码已发送，请 ${Math.ceil(cooldown / 1000)} 秒后再试`,
@@ -201,6 +231,11 @@ router.post("/forgot-password", async (req, res) => {
       retryAfter: Math.ceil(cooldown / 1000),
     });
   }
+
+  const gate = mailIpLimiter.hit(clientIpOf(req));
+  if (!gate.allowed) return tooManyRequests(res, gate.retryAfterMs, "重置验证码请求");
+
+  const { code } = createCode(email, "reset");
 
   const result = await sendResetCodeEmail(email, code);
   if (!result.success) {
@@ -288,6 +323,14 @@ router.post("/login", async (req, res) => {
     });
   }
 
+  // 两层限流：IP 维度挡换账号枚举，账号维度挡针对某个账号的字典爆破。
+  const ipGate = loginIpLimiter.hit(clientIpOf(req));
+  if (!ipGate.allowed) return tooManyRequests(res, ipGate.retryAfterMs, "登录尝试");
+
+  const attemptKey = loginAttemptKey(identifier);
+  const backoff = loginBackoff.check(attemptKey);
+  if (backoff.blocked) return tooManyRequests(res, backoff.retryAfterMs, "登录尝试");
+
   // 识别为邮箱则按 email 查，否则按 username 查
   const query = EMAIL_RE.test(identifier)
     ? { email: identifier }
@@ -295,7 +338,12 @@ router.post("/login", async (req, res) => {
 
   const user = await User.findOne({ where: query });
 
-  if (!user) {
+  // 先验密码、再判禁用：否则拿到 403「账号已被禁用」就能反推出该账号存在（账号枚举）。
+  // 真正的禁用用户仍会在输对密码后看到明确的禁用提示。
+  const isValidPassword = user ? await user.validatePassword(password) : false;
+
+  if (!user || !isValidPassword) {
+    loginBackoff.registerFailure(attemptKey);
     return res.status(401).json({
       error: "用户名/邮箱或密码错误",
       code: "INVALID_CREDENTIALS",
@@ -309,16 +357,10 @@ router.post("/login", async (req, res) => {
     });
   }
 
-  const isValidPassword = await user.validatePassword(password);
-
-  if (!isValidPassword) {
-    return res.status(401).json({
-      error: "用户名/邮箱或密码错误",
-      code: "INVALID_CREDENTIALS",
-    });
-  }
-
   const { token } = await createLoginSession(user, req);
+
+  // 登录成功即清掉本账号的失败计数；IP 维度的窗口不动（避免一次成功登录给同 IP 的爆破「洗白」）。
+  loginBackoff.reset(attemptKey);
 
   await user.update({ lastLoginAt: new Date() });
 
