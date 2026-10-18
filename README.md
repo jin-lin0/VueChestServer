@@ -14,7 +14,7 @@ Express + Sequelize + MySQL 后端服务，为 VueChest 提供 API 支持。
 
 ```
 config/       数据库与 AI 平台配置
-middleware/   认证 / 超级管理员 / 访问日志 / 响应压缩
+middleware/   认证 / 超级管理员 / 访问日志 / 响应压缩 / 请求限流
 models/       Sequelize 数据模型
 routes/       API 路由
 services/     业务服务（AI 中转、B 站解析、市场版本等）
@@ -118,12 +118,12 @@ pnpm start
 | `/api/ai-chat`              | `routes/aiChat.js`                                            | AI 对话（SSE 流式）与会话管理              |
 | `/api/app-data`             | `routes/appData.js`                                           | 市场应用云端 KV（按 userId + appId 隔离）  |
 | `/api/app-ai`               | `routes/appAi.js`                                             | 市场应用受控 AI 代理（需应用声明 ai 权限） |
-| `/api/netease`              | `routes/netease.js`                                           | 网易云音乐 API                             |
+| `/api/netease`              | `routes/netease.js`                                           | 网易云音乐 API（游客可用，按 IP 限流）     |
 | `/api/bilibili`             | `routes/bilibili.js`                                          | B 站字幕提取（WBI 签名，服务端代理）       |
 | `/api/music-favorites`      | `routes/musicFavorites.js`                                    | 音乐收藏分组（需登录）                     |
 | `/api/uploads`              | `routes/uploads.js`                                           | R2 预签名直传（头像 / 应用包 / 截图）      |
 | `/api/workspace-templates`  | `routes/workspaceTemplates.js`                                | 工作区模板                                 |
-| `/api/research-stocks`      | `routes/stockResearch.js`                                     | 腾讯 A 股大盘、估值摘要与前复权 K 线       |
+| `/api/research-stocks`      | `routes/stockResearch.js`                                     | 腾讯 A 股大盘、估值摘要与前复权 K 线（游客可用，按 IP 限流） |
 | `/api/westock`              | `routes/westock.js`                                           | westock CLI 封装：K 线 / 行情 / 选股 / 策略 |
 | `/api/stats`                | `routes/stats.js`                                             | 访问与业务统计（仪表盘）                   |
 | `/health`                   | `index.js`                                                    | 健康检查（顺带归档访问日志）               |
@@ -135,6 +135,18 @@ pnpm start
 - `GET /api/research-stocks/:symbol/kline`：返回标的、周期、复权方式和必填的已确认收盘日期。股票、基金为 `qfq`，指数为 `none`；收盘时重新取数，上游尚未确认收盘时缩短缓存并保留此前确认日期，缺少或无效的上游行情时间会被拒绝。
 
 腾讯专用复权接口的响应可使用 `qfqday/qfqweek/qfqmonth` 或 `day/week/month` 字段；解析优先使用复权字段，字段存在但损坏时不会改读另一组数据。K 线有效空数据返回 `404 / NO_DATA`，上游响应或格式异常返回 `502 / UPSTREAM_ERROR`，上游超时返回 `504 / UPSTREAM_TIMEOUT`。
+
+## 滥用防护
+
+计数存于进程内存；多实例各自计数，跨实例共享额度需另行实现。限流依据转发头最右一跳，部署时需要可信边缘覆盖该位置；可绕过边缘直连源站的环境不能依赖此规则识别客户端。
+
+| 接口 | 策略 |
+| --- | --- |
+| `/api/auth/login` | 同账号失败 5 次后指数退避，最长 15 分钟，成功清零；单 IP 60 次/10 分钟 |
+| `/api/auth/send-code`、`/api/auth/forgot-password` | 单 IP 5 次/小时，另有邮箱冷却 |
+| `/api/netease`、`/api/research-stocks` | 单 IP 600 次/30 分钟，保留游客访问 |
+
+音乐和行情代理缓存可复用的只读结果，并合并相同参数的并发请求。超出请求额度返回 `429` 和 `Retry-After`。
 
 ## 部署到 Vercel
 

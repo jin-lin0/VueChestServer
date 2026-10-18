@@ -31,24 +31,9 @@ app.get("/", (req, res) => {
   res.send("AI Chat Server is running");
 });
 
-// 健康检查 + 日志归档（cron 保活用）
-app.get("/health", async (req, res) => {
-  try {
-    const result = await visitLogger.flushToDB();
-    res.json({
-      status: "ok",
-      timestamp: new Date().toISOString(),
-      logsFlushed: result.flushed,
-      bufferRemaining: visitLogger.getBufferSize(),
-    });
-  } catch (e) {
-    res.json({
-      status: "ok",
-      timestamp: new Date().toISOString(),
-      error: e.message,
-    });
-  }
-});
+// 健康检查 + 日志归档（Vercel cron 每日保活用）
+// 说明见 routes/health.js：它会真的探一次数据库，挂了回 503 degraded，而不是永远 ok。
+app.use("/health", require("./routes/health"));
 
 // 管理员认证路由
 const authRouter = require("./routes/auth");
