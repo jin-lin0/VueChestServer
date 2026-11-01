@@ -49,6 +49,12 @@ pnpm install
 | `R2_SECRET_ACCESS_KEY` | R2 API Token Secret              |                            |
 | `R2_BUCKET_NAME`       | R2 存储桶名称                    | `vuechest`                 |
 | `R2_PUBLIC_URL`        | R2 自定义域                      | `https://files.020201.xyz` |
+| `RESEND_KEY`           | Resend API Key（验证码 / 日报）  |                            |
+| `RESEND_FROM`          | 发件人整串（优先于 DOMAIN）      | `VueChest <noreply@x.com>` |
+| `RESEND_DOMAIN`        | 发件人域名（未配 FROM 时使用）   | `example.com`              |
+| `CRON_SECRET`          | Vercel Cron 鉴权密钥             | 随机长串                   |
+| `STOCK_DIGEST_TO`      | 策略日报收件人（逗号分隔）       | `a@x.com,b@y.com`          |
+| `STOCK_DIGEST_STRATEGIES` | 可选，覆盖默认策略 id         | `macd_golden,ma_long`      |
 
 ### 3. 启动服务
 
@@ -147,6 +153,34 @@ pnpm start
 | `/api/netease`、`/api/research-stocks` | 单 IP 600 次/30 分钟，保留游客访问 |
 
 音乐和行情代理缓存可复用的只读结果，并合并相同参数的并发请求。超出请求额度返回 `429` 和 `Retry-After`。
+
+## 策略选股日报
+
+`vercel.json` 配置了每工作日北京时间 08:30（`30 0 * * 1-5` UTC）触发的 Cron，
+调用 `GET /api/stock-digest/run`，流程见 `services/stockDigest.js`：
+
+1. **采集**：先用上证指数行情确定「最近收盘交易日」D，再用 `strategy <id> --date D`
+   跑各策略（默认 7 个热门策略），结果按 `(strategyId, signalDate)` 幂等写入
+   `stock_strategy_signals`。
+2. **评估**：早盘行情 `asOf` 仍停在上一个收盘日，因此用一次批量行情即可回看
+   历史信号的「次日涨跌」，统计正确率并标记 `evaluated`。节假日无新数据时保持待评估。
+3. **推送**：邮件含「昨日 / 近3日 / 近7日 / 近15日 / 累计」正确率排名表，以及按累计
+   正确率排序的今日候选股。
+
+**鉴权**：Vercel 配置 `CRON_SECRET` 后会自动给 cron 请求带上
+`Authorization: Bearer $CRON_SECRET`，接口用常量时间比较校验；未配置时一律 401。
+手动补发：
+
+```bash
+curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CRON_SECRET"
+```
+
+**可观测性**：每次执行（含邮件失败）写入 `cron_runs`，失败时向 `STOCK_DIGEST_TO`
+发告警邮件。登录用户可读 `GET /api/stock-digest/history?days=30`（战绩数据），
+管理员可读 `GET /api/stock-digest/runs`（最近执行记录）。
+
+> Hobby 计划的 cron 每天只触发一次，且实际时间在指定小时的窗口内浮动；
+> 因此「盘中提醒」类需求不适用。日报在开盘前运行，正好对应前一交易日收盘数据。
 
 ## 部署到 Vercel
 

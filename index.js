@@ -107,6 +107,10 @@ app.use("/api/research-stocks", stockResearchRouter);
 const westockRouter = require("./routes/westock");
 app.use("/api/westock", westockRouter);
 
+// 策略选股日报：Vercel Cron 每早触发，评估历史预测正确率并按排名推送邮件（Resend）
+const stockDigestRouter = require("./routes/stockDigest");
+app.use("/api/stock-digest", stockDigestRouter);
+
 // 同步数据库模型（Vercel 环境跳过，避免多实例冷启动同时抢连接阻塞业务请求）
 if (!process.env.VERCEL) {
   // sync() 只做 `CREATE TABLE IF NOT EXISTS`：让模型里声明过的表存在。

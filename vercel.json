@@ -19,6 +19,10 @@
     {
       "path": "/health",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/stock-digest/run",
+      "schedule": "30 0 * * 1-5"
     }
   ]
 }

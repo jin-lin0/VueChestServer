@@ -105,4 +105,28 @@ async function sendResetCodeEmail(to, code) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendResetCodeEmail };
+/**
+ * 发送任意 HTML 邮件（股票策略日报等非验证码场景共用）
+ * @param {object} opts
+ * @param {string|string[]} opts.to 收件人
+ * @param {string} opts.subject 标题
+ * @param {string} opts.html 正文 HTML
+ * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
+ */
+async function sendHtmlMail({ to, subject, html }) {
+  try {
+    const resend = getClient();
+    const from = getFromAddress();
+    const { data, error } = await resend.emails.send({ from, to, subject, html });
+    if (error) {
+      console.error("Resend 发送失败:", error);
+      return { success: false, error: error.message || "邮件发送失败" };
+    }
+    return { success: true, messageId: data?.id };
+  } catch (err) {
+    console.error("邮件服务异常:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+module.exports = { sendVerificationEmail, sendResetCodeEmail, sendHtmlMail };
