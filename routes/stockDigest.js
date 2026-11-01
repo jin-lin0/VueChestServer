@@ -71,7 +71,7 @@ async function handle(req, res, next) {
     await recordRun(
       true,
       duration,
-      `评估 ${result.evaluated.length} 批，采集 ${result.collected.length} 个策略`,
+      `评估 ${result.evaluated.length} 批，采集 ${result.collected.length}/${result.requested} 个策略，用时 ${duration}ms`,
     );
     res.json({ success: true, ...result });
   } catch (error) {

@@ -1,8 +1,20 @@
 const { Op } = require("sequelize");
 const { runWestock } = require("./westock/client");
+const { positiveInt } = require("./westock/limiter");
 const { fetchQuotes } = require("./tencentQuotes");
 const StockStrategySignal = require("../models/stockStrategySignal");
 const { sendHtmlMail } = require("../utils/mail");
+
+// Vercel 函数硬上限 60s（vercel.json maxDuration），且生产区域到国内上游的网络
+// 明显慢于本地（实测本地全流程约 13s，线上曾整单 504）。因此按「整体预算 +
+// 单步预算」两层收口：预算耗尽就跳过剩余策略并照常发邮件，宁可日报不全，
+// 也不能超时导致一封都发不出去。
+const TOTAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_BUDGET_MS, 35000);
+const EVAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_EVAL_BUDGET_MS, 10000);
+const STRATEGY_TIMEOUT_MS = positiveInt(
+  process.env.STOCK_DIGEST_STRATEGY_TIMEOUT_MS,
+  10000,
+);
 
 // ── 策略集合 ─────────────────────────────────────────────────
 // 默认跑前端「热门策略」同一批（见 VueChest westock-discover.ts 的 HOT_ITEMS），
@@ -113,13 +125,13 @@ async function latestCompletedDate() {
  * 跑一个策略并把结果落库（(strategyId, signalDate) 幂等）。
  * 返回 { strategyId, strategyName, signalDate, picks } 或 null（无结果/格式异常）。
  */
-async function collectStrategy(strategyId, effectiveDate = null) {
+async function collectStrategy(strategyId, effectiveDate = null, timeoutMs = undefined) {
   const strategyName = STRATEGY_NAMES[strategyId] || strategyId;
   const args = ["strategy", strategyId];
   // 显式指定交易日：CLI 默认用运行当天当标题（周末也照写），不可依赖
   if (effectiveDate) args.push("--date", effectiveDate);
   args.push("--limit", String(MAX_PICKS));
-  const result = await runWestock("screen", args);
+  const result = await runWestock("screen", args, { timeoutMs });
   if (!result.success || result.kind !== "table" || !Array.isArray(result.rows)) {
     console.warn(`[stock-digest] 策略 ${strategyId} 无有效结果：${result.error || result.kind}`);
     return null;
@@ -156,12 +168,24 @@ async function collectStrategy(strategyId, effectiveDate = null) {
 
 // ── 预测评估 ─────────────────────────────────────────────────
 
-async function batchQuotes(symbols) {
+async function batchQuotes(symbols, deadline = Infinity) {
   const unique = [...new Set(symbols)];
   const map = new Map();
   for (let i = 0; i < unique.length; i += 100) {
-    const rows = await fetchQuotes(unique.slice(i, i + 100));
-    for (const row of rows) map.set(row.symbol, row);
+    // 预算耗尽就带着已取到的样本继续：部分评估好过整单失败
+    if (Date.now() > deadline) {
+      console.warn(
+        `[stock-digest] 评估预算耗尽，仅取到 ${map.size}/${unique.size} 只行情`,
+      );
+      break;
+    }
+    try {
+      const rows = await fetchQuotes(unique.slice(i, i + 100));
+      for (const row of rows) map.set(row.symbol, row);
+    } catch (error) {
+      // 单批失败不影响其他批次，只是样本少一些
+      console.warn(`[stock-digest] 行情批次获取失败，已跳过: ${error.message}`);
+    }
   }
   return map;
 }
@@ -175,7 +199,7 @@ async function batchQuotes(symbols) {
  * 对每天运行的 cron 而言 D 正是信号日的次一交易日）。
  * signalDate >= D 的信号（今早刚采集的）留到之后的 cron 评估。
  */
-async function evaluatePending() {
+async function evaluatePending(deadline = Infinity) {
   const pending = await StockStrategySignal.findAll({
     where: { evaluated: false },
     order: [["signalDate", "ASC"]],
@@ -184,9 +208,10 @@ async function evaluatePending() {
   if (!pending.length) return [];
 
   const symbols = pending.flatMap((r) => r.picks.map((p) => p.symbol));
-  const quotes = await batchQuotes(symbols);
+  const quotes = await batchQuotes(symbols, deadline);
 
   const results = [];
+  const updates = [];
   for (const record of pending) {
     let evalDate = null;
     let total = 0;
@@ -205,15 +230,27 @@ async function evaluatePending() {
     }
     // 整批都没有新交易日数据（今天停牌日/周末重跑）：保持未评估，下次再看
     if (!total) continue;
-    await record.update({
-      evaluated: true,
-      evalDate,
-      total,
-      upCount,
-      avgChangePercent: changeSum / total,
-    });
+    // 状态回写并行：Vercel 的 MySQL 连接池只有 1 个连接，串行 100 次往返
+    // 在远程库上足以吃掉十几秒预算。
+    updates.push(
+      record
+        .update({
+          evaluated: true,
+          evalDate,
+          total,
+          upCount,
+          avgChangePercent: changeSum / total,
+        })
+        .catch((error) => {
+          console.error(
+            `[stock-digest] 信号 ${record.strategyId}@${record.signalDate} 回写失败:`,
+            error.message,
+          );
+        }),
+    );
     results.push(record);
   }
+  await Promise.all(updates);
   return results;
 }
 
@@ -424,10 +461,17 @@ function renderEmail({ dateLabel, windowAccuracyMap, collected, accuracyMap }) {
  * 三步彼此尽量独立：单个策略采集失败不影响其余策略与邮件发送。
  */
 async function runDailyDigest() {
+  const startedAt = Date.now();
+  const deadline = startedAt + TOTAL_BUDGET_MS;
+  const phase = (label) => console.log(`[stock-digest] ${label} +${Date.now() - startedAt}ms`);
+
   // 1) 先评估：今天新采集的信号 signalDate 等于最新交易日，不会被误评
   let evaluatedRecords = [];
   try {
-    evaluatedRecords = await evaluatePending();
+    // 评估单独封顶，避免历史积压把采集预算吃光
+    const evalDeadline = Math.min(deadline, Date.now() + EVAL_BUDGET_MS);
+    evaluatedRecords = await evaluatePending(evalDeadline);
+    phase(`评估完成（${evaluatedRecords.length} 批）`);
   } catch (error) {
     console.error("[stock-digest] 评估历史信号失败:", error.message);
   }
@@ -436,10 +480,20 @@ async function runDailyDigest() {
   // 用 Promise.allSettled 并行：client.js 内部已有并发闸门（默认 4），
   // 7 个策略并行只需两批，比串行更不容易触发函数 60s 超时。
   const effectiveDate = await latestCompletedDate();
+  phase(`参考交易日 ${effectiveDate || "未知"}`);
   const settled = await Promise.allSettled(
     digestStrategies().map(async (strategyId) => {
+      const remaining = deadline - Date.now();
+      if (remaining < 3000) {
+        console.warn(`[stock-digest] 预算耗尽，跳过策略 ${strategyId}`);
+        return null;
+      }
       try {
-        return await collectStrategy(strategyId, effectiveDate);
+        return await collectStrategy(
+          strategyId,
+          effectiveDate,
+          Math.min(STRATEGY_TIMEOUT_MS, remaining),
+        );
       } catch (error) {
         console.error(`[stock-digest] 策略 ${strategyId} 采集失败:`, error.message);
         return null;
@@ -449,10 +503,12 @@ async function runDailyDigest() {
   const collected = settled
     .map((item) => (item.status === "fulfilled" ? item.value : null))
     .filter(Boolean);
+  phase(`采集完成（${collected.length}/${digestStrategies().length} 个策略）`);
 
   // 3) 正确率统计：累计（推荐区排序用）+ 多窗口（排名表用，含刚评估完的样本）
   const accuracyMap = await historicalAccuracy();
   const windowAccuracyMap = await windowedAccuracy();
+  phase("正确率聚合完成");
 
   const to = (process.env.STOCK_DIGEST_TO || "")
     .split(",")
@@ -470,9 +526,12 @@ async function runDailyDigest() {
     subject: `【VueChest】策略选股日报 ${dateLabel}`,
     html: renderEmail({ dateLabel, windowAccuracyMap, collected, accuracyMap }),
   });
+  phase(mail.success ? "邮件已发送" : `邮件发送失败：${mail.error}`);
 
   return {
     date: dateLabel,
+    durationMs: Date.now() - startedAt,
+    requested: digestStrategies().length,
     evaluated: evaluatedRecords.map((r) => ({
       strategyId: r.strategyId,
       signalDate: r.signalDate,

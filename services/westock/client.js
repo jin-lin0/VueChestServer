@@ -292,14 +292,17 @@ function appendBounded(current, chunk, limit) {
  * 运行 westock CLI。
  * @param {"data"|"screen"} engine
  * @param {string[]} args
+ * @param {{timeoutMs?: number}} [options] 单次调用超时；不传用 WESTOCK_TIMEOUT_MS 默认值
  * @returns {Promise<object>} { success, exitCode, stdout, stderr, kind, error?, ... }
  */
-async function runWestock(engine, args) {
+async function runWestock(engine, args, options = {}) {
   const tool = ENGINE_FILES[engine];
   if (!tool) {
     throw badRequest(`未知引擎：${engine}`);
   }
   const safeArgs = assertSafeArgs(args);
+  // 调用方可以在全局超时内再收紧（例如定时任务要预留后续步骤的时间）
+  const timeoutMs = positiveInt(options.timeoutMs, DEFAULT_TIMEOUT_MS);
 
   await limiter.acquire();
   try {
@@ -328,7 +331,7 @@ async function runWestock(engine, args) {
         // unref：兜底定时器不应该把函数实例的存活时间拖长。
         killTimer.unref?.();
         reject(Object.assign(new Error("Westock 执行超时"), { status: 504 }));
-      }, DEFAULT_TIMEOUT_MS);
+      }, timeoutMs);
 
       child.stdout.on("data", (chunk) => {
         stdout = appendBounded(stdout, chunk, MAX_STDOUT_CHARS);

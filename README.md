@@ -179,6 +179,15 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 发告警邮件。登录用户可读 `GET /api/stock-digest/history?days=30`（战绩数据），
 管理员可读 `GET /api/stock-digest/runs`（最近执行记录）。
 
+**超时保护**：Vercel 函数硬上限 60s，生产区域访问国内上游又明显慢于本地，
+因此设置了整体预算（默认 35s）：预算耗尽会跳过剩余策略并照常发邮件，避免整单 504。
+可用 `STOCK_DIGEST_BUDGET_MS`（整体）、`STOCK_DIGEST_EVAL_BUDGET_MS`（评估）、
+`STOCK_DIGEST_STRATEGY_TIMEOUT_MS`（单个策略）调整。执行日志会打印各阶段耗时
+（`[stock-digest] 采集完成 +10447ms`），可在 Vercel Functions → Logs 查看。
+
+> 若线上仍偶尔超时，优先把 **Functions Region** 调到 `hkg1`（香港）：本项目大部分
+> 上游（腾讯行情、westock、网易云、B 站）都在国内，从美东默认区域访问延迟很高。
+
 > Hobby 计划的 cron 每天只触发一次，且实际时间在指定小时的窗口内浮动；
 > 因此「盘中提醒」类需求不适用。日报在开盘前运行，正好对应前一交易日收盘数据。
 
