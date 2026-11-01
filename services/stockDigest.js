@@ -9,11 +9,11 @@ const { sendHtmlMail } = require("../utils/mail");
 // 明显慢于本地（实测本地全流程约 13s，线上曾整单 504）。因此按「整体预算 +
 // 单步预算」两层收口：预算耗尽就跳过剩余策略并照常发邮件，宁可日报不全，
 // 也不能超时导致一封都发不出去。
-const TOTAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_BUDGET_MS, 35000);
-const EVAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_EVAL_BUDGET_MS, 10000);
+const TOTAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_BUDGET_MS, 40000);
+const EVAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_EVAL_BUDGET_MS, 12000);
 const STRATEGY_TIMEOUT_MS = positiveInt(
   process.env.STOCK_DIGEST_STRATEGY_TIMEOUT_MS,
-  10000,
+  15000,
 );
 
 // ── 策略集合 ─────────────────────────────────────────────────

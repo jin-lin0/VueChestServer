@@ -191,6 +191,11 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 > Hobby 计划的 cron 每天只触发一次，且实际时间在指定小时的窗口内浮动；
 > 因此「盘中提醒」类需求不适用。日报在开盘前运行，正好对应前一交易日收盘数据。
 
+> ⚠️ **Hobby 计划必须开启 Fluid Compute**（Settings → Functions → Fluid Compute），
+> 否则函数最长只能运行 **10 秒**，`vercel.json` 的 `maxDuration: 60` 会被夹到 10s，
+> 日报会在第 10 秒被 Vercel 杀掉并返回 504（`FUNCTION_INVOCATION_TIMEOUT`）。
+> 开启后 Hobby 默认可运行 300s。
+
 ## 部署到 Vercel
 
 项目已配置 `vercel.json`，直接关联 GitHub 仓库即可部署。
