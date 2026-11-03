@@ -1,5 +1,5 @@
 const express = require("express");
-const crypto = require("node:crypto");
+const cronAuth = require("../middleware/cronAuth");
 const { runDailyDigest, digestHistory } = require("../services/stockDigest");
 const CronRun = require("../models/cronRun");
 const { sendHtmlMail } = require("../utils/mail");
@@ -7,26 +7,6 @@ const { authMiddleware } = require("../middleware/auth");
 const { adminOnly } = require("../middleware/superAdmin");
 
 const router = express.Router();
-
-/**
- * 只允许 Vercel Cron（或知道密钥的运维）触发。
- * Vercel 在项目配置了 CRON_SECRET 环境变量后，会自动给 cron 请求带上
- * `Authorization: Bearer ${CRON_SECRET}`；这里做常量时间比较。
- * 未配置 CRON_SECRET 时一律拒绝——这个接口会发邮件、写库，不能裸奔。
- */
-function cronAuth(req, res, next) {
-  const secret = process.env.CRON_SECRET || "";
-  const header = req.headers.authorization || "";
-  const expected = `Bearer ${secret}`;
-  const ok =
-    secret &&
-    header.length === expected.length &&
-    crypto.timingSafeEqual(Buffer.from(header), Buffer.from(expected));
-  if (!ok) {
-    return res.status(401).json({ success: false, error: "未授权" });
-  }
-  next();
-}
 
 /** 执行记录落库失败不能影响主流程（日报已发出就算成功）。 */
 async function recordRun(success, durationMs, detail) {

@@ -23,6 +23,10 @@
     {
       "path": "/api/stock-digest/run",
       "schedule": "30 0 * * 1-5"
+    },
+    {
+      "path": "/api/checkins/run",
+      "schedule": "17 1 * * *"
     }
   ]
 }

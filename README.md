@@ -196,6 +196,38 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 > 日报会在第 10 秒被 Vercel 杀掉并返回 504（`FUNCTION_INVOCATION_TIMEOUT`）。
 > 开启后 Hobby 默认可运行 300s。
 
+## 个人每日签到
+
+个人运维任务，与 VueChest 登录和管理员角色无关。所有入口均验证 `Authorization: Bearer <CRON_SECRET>`；缺失或错误返回 401。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/checkins/run` | Vercel 每日触发 |
+| `POST /api/checkins/run` | 手动补跑 |
+| `PUT /api/checkins/credentials/:task` | 首次录入或替换凭据，只写不读 |
+
+部署前创建 `checkin_states`，并确认 `cron_runs` 已存在；建表 SQL 随代码提供，`pnpm schema:check` 可检查结构差异。Vercel 运行时不会自动建表。
+
+复用 `CRON_SECRET`，另配置 `CHECKIN_ENCRYPTION_KEY`（32 字节密钥，编码为 64 个十六进制字符，无默认值）。所有站点凭据统一加密存库，不按站点新增环境变量。密钥生成命令：
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+通过 HTTPS 向 `PUT /api/checkins/credentials/workbuddy-cn` 提交本人国内版凭据：
+
+```json
+{ "accessToken": "本人 Access Token", "refreshToken": "对应的 Refresh Token" }
+```
+
+录入不执行签到，也不返回凭据；录入后调用 POST 执行入口验证。刷新后的令牌自动加密写回，重新登录后仍通过同一 PUT 接口替换。任务执行中拒绝覆盖（409）。加密密钥丢失或更换后，需要迁移密文或重新录入凭据。
+
+计划每天 UTC 01:17（北京时间 09:17）运行，Hobby 可能延迟。最多并发两个任务，总预算 40 秒、单任务 30 秒；需确认部署后的函数时长。数据库租约协调跨实例并发，同一业务日期完成后跳过，失败可补跑。
+
+结果在 `results` 中：`success` / `already_done` 表示上游确认已签；`unconfigured` 表示未录入；`inactive` 表示活动未开放；`failed` / `deferred` 表示失败或预算不足。部分失败时返回 502，其他任务继续执行；Vercel 不会自动重试失败的 Cron。脱敏执行摘要存入 `cron_runs`。
+
+当前只接入 WorkBuddy 国内版签到，不包含活跃模拟、对话或其他成长任务。新增站点时实现凭据校验与签到适配器，并加入任务清单，无需用户管理模块。
+
 ## 部署到 Vercel
 
 项目已配置 `vercel.json`，直接关联 GitHub 仓库即可部署。
