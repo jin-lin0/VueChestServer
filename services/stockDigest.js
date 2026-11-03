@@ -5,10 +5,10 @@ const { fetchQuotes } = require("./tencentQuotes");
 const StockStrategySignal = require("../models/stockStrategySignal");
 const { sendHtmlMail } = require("../utils/mail");
 
-// Vercel 函数硬上限 60s（vercel.json maxDuration），且生产区域到国内上游的网络
-// 明显慢于本地（实测本地全流程约 13s，线上曾整单 504）。因此按「整体预算 +
-// 单步预算」两层收口：预算耗尽就跳过剩余策略并照常发邮件，宁可日报不全，
-// 也不能超时导致一封都发不出去。
+// 生产区域到国内上游的网络明显慢于本地（实测本地全流程约 13s，线上曾整单 504）。
+// 因此按「整体预算 + 单步预算」两层收口：预算耗尽就跳过剩余策略并照常发邮件，
+// 宁可日报不全，也不能超时导致一封都发不出去。当前 vercel.json 的 maxDuration
+// 为 300s（Fluid Compute），40s 预算仍按日报的实际耗时保守保留。
 const TOTAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_BUDGET_MS, 40000);
 const EVAL_BUDGET_MS = positiveInt(process.env.STOCK_DIGEST_EVAL_BUDGET_MS, 12000);
 const STRATEGY_TIMEOUT_MS = positiveInt(

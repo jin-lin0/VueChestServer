@@ -5,9 +5,16 @@ const {
   encryptCredentials,
   decryptCredentials,
 } = require("../../utils/checkinCredentials");
+const { positiveInt } = require("../westock/limiter");
 const workbuddy = require("./workbuddy");
 
 const tasks = [workbuddy];
+
+// 开启 Fluid Compute 后 Hobby 的默认与上限均为 300s（vercel.json maxDuration），
+// 预算给冷启动、数据库连接和响应留出余量。预算只是上限，不预占时长。
+const DEFAULT_BUDGET_MS = 240000;
+const DEFAULT_TASK_MS = 60000;
+
 function dayKey(now, timeZone) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -27,8 +34,8 @@ function createCheckinService({
   Run,
   registry = tasks,
   now = Date.now,
-  budgetMs = 40000,
-  taskMs = 30000,
+  budgetMs = positiveInt(process.env.CHECKIN_BUDGET_MS, DEFAULT_BUDGET_MS),
+  taskMs = positiveInt(process.env.CHECKIN_TASK_TIMEOUT_MS, DEFAULT_TASK_MS),
 }) {
   async function execute(task, deadline) {
     const configured = await State.findByPk(task.id, { attributes: ["id"] });

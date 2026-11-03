@@ -179,8 +179,9 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 发告警邮件。登录用户可读 `GET /api/stock-digest/history?days=30`（战绩数据），
 管理员可读 `GET /api/stock-digest/runs`（最近执行记录）。
 
-**超时保护**：Vercel 函数硬上限 60s，生产区域访问国内上游又明显慢于本地，
-因此设置了整体预算（默认 35s）：预算耗尽会跳过剩余策略并照常发邮件，避免整单 504。
+**超时保护**：生产区域访问国内上游明显慢于本地，因此设置了整体预算（默认 40s）：
+预算耗尽会跳过剩余策略并照常发邮件，避免整单 504。当前 `maxDuration` 为 300s
+（Fluid Compute），日报预算仍按实际耗时保守保留。
 可用 `STOCK_DIGEST_BUDGET_MS`（整体）、`STOCK_DIGEST_EVAL_BUDGET_MS`（评估）、
 `STOCK_DIGEST_STRATEGY_TIMEOUT_MS`（单个策略）调整。执行日志会打印各阶段耗时
 （`[stock-digest] 采集完成 +10447ms`），可在 Vercel Functions → Logs 查看。
@@ -192,7 +193,7 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 > 因此「盘中提醒」类需求不适用。日报在开盘前运行，正好对应前一交易日收盘数据。
 
 > ⚠️ **Hobby 计划必须开启 Fluid Compute**（Settings → Functions → Fluid Compute），
-> 否则函数最长只能运行 **10 秒**，`vercel.json` 的 `maxDuration: 60` 会被夹到 10s，
+> 否则函数最长只能运行 **10 秒**，`vercel.json` 的 `maxDuration: 300` 会被夹到 10s，
 > 日报会在第 10 秒被 Vercel 杀掉并返回 504（`FUNCTION_INVOCATION_TIMEOUT`）。
 > 开启后 Hobby 默认可运行 300s。
 
@@ -208,7 +209,7 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 
 部署前确保 `checkin_states` 和 `cron_runs` 已存在；表结构由模型定义，`pnpm schema:check` 可检查结构差异。Vercel 运行时不会自动建表。
 
-复用 `CRON_SECRET`，另配置 `CHECKIN_ENCRYPTION_KEY`（32 字节密钥，编码为 64 个十六进制字符，无默认值）。所有站点凭据统一加密存库，不按站点新增环境变量。密钥生成命令：
+复用 `CRON_SECRET`，另配置 `CHECKIN_ENCRYPTION_KEY`（32 字节密钥，编码为 64 个十六进制字符，无默认值）。所有站点凭据统一加密存库，不按站点新增环境变量。时间预算可用 `CHECKIN_BUDGET_MS`（整轮，默认 240000）和 `CHECKIN_TASK_TIMEOUT_MS`（单任务，默认 60000）覆盖。密钥生成命令：
 
 ```bash
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
@@ -222,7 +223,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 录入不执行签到，也不返回凭据；录入后调用 POST 执行入口验证。刷新后的令牌自动加密写回，重新登录后仍通过同一 PUT 接口替换。任务执行中拒绝覆盖（409）。加密密钥丢失或更换后，需要迁移密文或重新录入凭据。
 
-计划每天 UTC 01:17（北京时间 09:17）运行，Hobby 可能延迟。最多并发两个任务，总预算 40 秒、单任务 30 秒；需确认部署后的函数时长。数据库租约协调跨实例并发，同一业务日期完成后跳过，失败可补跑。
+计划每天 UTC 01:17（北京时间 09:17）运行，Hobby 可能延迟。最多并发两个任务，总预算默认 240 秒、单任务 60 秒，可用 `CHECKIN_BUDGET_MS` 和 `CHECKIN_TASK_TIMEOUT_MS` 调整；两者都要小于部署后的函数时长。数据库租约协调跨实例并发，同一业务日期完成后跳过，失败可补跑。
 
 结果在 `results` 中：`success` / `already_done` 表示上游确认已签；`unconfigured` 表示未录入；`inactive` 表示活动未开放；`failed` / `deferred` 表示失败或预算不足。部分失败时返回 502，其他任务继续执行；Vercel 不会自动重试失败的 Cron。脱敏执行摘要存入 `cron_runs`。
 

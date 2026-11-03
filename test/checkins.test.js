@@ -361,6 +361,20 @@ test("时间不足显式标记未执行任务，不能返回全部成功", async
   assert.equal(result.results[0].status, "deferred");
 });
 
+test("环境变量可覆盖默认时间预算", async (t) => {
+  key(t);
+  const previous = process.env.CHECKIN_BUDGET_MS;
+  process.env.CHECKIN_BUDGET_MS = "100";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CHECKIN_BUDGET_MS;
+    else process.env.CHECKIN_BUDGET_MS = previous;
+  });
+  const f = fixture(() => assert.fail("not enough time"));
+  const result = await f.service.runAll();
+  assert.equal(result.success, false);
+  assert.equal(result.results[0].status, "deferred");
+});
+
 test("任务成功但执行记录保存失败时如实报告，不重复签到", async (t) => {
   key(t);
   let count = 0;
