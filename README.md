@@ -206,7 +206,7 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 | `POST /api/checkins/run` | 手动补跑 |
 | `PUT /api/checkins/credentials/:task` | 首次录入或替换凭据，只写不读 |
 
-部署前创建 `checkin_states`，并确认 `cron_runs` 已存在；建表 SQL 随代码提供，`pnpm schema:check` 可检查结构差异。Vercel 运行时不会自动建表。
+部署前确保 `checkin_states` 和 `cron_runs` 已存在；表结构由模型定义，`pnpm schema:check` 可检查结构差异。Vercel 运行时不会自动建表。
 
 复用 `CRON_SECRET`，另配置 `CHECKIN_ENCRYPTION_KEY`（32 字节密钥，编码为 64 个十六进制字符，无默认值）。所有站点凭据统一加密存库，不按站点新增环境变量。密钥生成命令：
 
@@ -277,3 +277,32 @@ pnpm run dev
 ```
 
 进程使用 `nodemon` 监听文件变更，修改代码后自动重启。
+
+<details>
+<summary>第三方参考与许可</summary>
+
+WorkBuddy 国内版签到适配参考了 [L0NE-6/WorkBuddy-Daily](https://github.com/L0NE-6/WorkBuddy-Daily) 的接口流程，使用 Node.js 重新实现。
+
+MIT License
+
+Copyright (c) 2026 L0NE-6
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+</details>
