@@ -20,6 +20,11 @@ const CronRun = sequelize.define(
       type: DataTypes.STRING(64),
       allowNull: false,
     },
+    // 签到类任务按超级管理员隔离；其它定时任务（如股票日报）保持 null。
+    ownerId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     success: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
@@ -38,7 +43,10 @@ const CronRun = sequelize.define(
     tableName: "cron_runs",
     timestamps: true,
     updatedAt: false,
-    indexes: [{ fields: ["job", "createdAt"] }],
+    indexes: [
+      { fields: ["job", "createdAt"] },
+      { fields: ["ownerId", "job", "createdAt"] },
+    ],
   },
 );
 

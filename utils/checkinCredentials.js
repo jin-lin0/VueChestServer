@@ -29,7 +29,8 @@ function encryptCredentials(value, accountId, provider) {
     cipher.final(),
   ]);
   return [
-    "v1",
+    // AAD 绑定到「归属账号 + 站点」，不同超管不能复用同一份密文。
+    "v2",
     iv.toString("base64"),
     cipher.getAuthTag().toString("base64"),
     body.toString("base64"),
@@ -40,7 +41,7 @@ function decryptCredentials(value, accountId, provider) {
   const key = encryptionKey();
   try {
     const [version, iv, tag, body, extra] = value.split(".");
-    if (version !== "v1" || extra !== undefined) throw new Error();
+    if (version !== "v2" || extra !== undefined) throw new Error();
     const decipher = crypto.createDecipheriv(
       "aes-256-gcm",
       key,

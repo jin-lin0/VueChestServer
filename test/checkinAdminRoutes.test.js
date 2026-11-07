@@ -1,0 +1,402 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const express = require("express");
+const { Op } = require("sequelize");
+
+const task = {
+  id: "workbuddy-cn",
+  name: "WorkBuddy 国内版",
+  description: "每日签到领积分",
+  timeZone: "Asia/Shanghai",
+  credentialFields: [
+    { key: "accessToken", label: "Access Token", type: "password", required: true },
+    { key: "refreshToken", label: "Refresh Token", type: "password", required: true },
+  ],
+};
+
+function sortRuns(rows) {
+  return [...rows].sort((a, b) => b.id - a.id);
+}
+
+function escapeLike(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function likeMatcher(pattern) {
+  const body = String(pattern)
+    .split("%")
+    .map(escapeLike)
+    .join(".*");
+  return new RegExp(`^${body}$`);
+}
+
+function matches(row, where) {
+  for (const key of Reflect.ownKeys(where)) {
+    const cond = where[key];
+    if (key === Op.and) {
+      if (!cond.every((item) => matches(row, item))) return false;
+      continue;
+    }
+    if (key === Op.or) {
+      if (!cond.some((item) => matches(row, item))) return false;
+      continue;
+    }
+    const value = row[key];
+    if (cond && typeof cond === "object" && !(cond instanceof Date)) {
+      for (const op of Reflect.ownKeys(cond)) {
+        const arg = cond[op];
+        if (op === Op.like && !likeMatcher(arg).test(String(value))) return false;
+        if (op === Op.notLike && likeMatcher(arg).test(String(value))) return false;
+        if (op === Op.ne && value === arg) return false;
+      }
+      continue;
+    }
+    if (value !== cond) return false;
+  }
+  return true;
+}
+
+async function withRouter(run) {
+  const previousSecret = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = "test-cron-secret";
+
+  const runRows = [
+    {
+      id: 8,
+      job: "checkin-config:workbuddy-cn",
+      ownerId: 2,
+      success: true,
+      durationMs: 0,
+      detail: "admin#2 更新凭据",
+      createdAt: "2026-11-08T02:00:00.000Z",
+    },
+    {
+      id: 7,
+      job: "checkin:workbuddy-cn",
+      ownerId: 2,
+      success: true,
+      durationMs: 100,
+      detail: "success: 另一个超管完成",
+      createdAt: "2026-11-08T01:30:00.000Z",
+    },
+    {
+      id: 6,
+      job: "checkin:workbuddy-cn",
+      ownerId: 1,
+      success: false,
+      durationMs: 800,
+      detail: "failed: 上游超时",
+      createdAt: "2026-11-08T01:00:00.000Z",
+    },
+    {
+      id: 5,
+      job: "checkin-config:workbuddy-cn",
+      ownerId: 1,
+      success: true,
+      durationMs: 0,
+      detail: "admin#1 更新凭据",
+      createdAt: "2026-11-07T01:00:00.000Z",
+    },
+    {
+      id: 4,
+      job: "checkin:workbuddy-cn",
+      ownerId: 1,
+      success: false,
+      durationMs: 700,
+      detail: "failed: 网络错误",
+      createdAt: "2026-11-06T01:00:00.000Z",
+    },
+    {
+      id: 3,
+      job: "checkin:other-site",
+      ownerId: 1,
+      success: true,
+      durationMs: 300,
+      detail: "success: 完成",
+      createdAt: "2026-11-05T01:00:00.000Z",
+    },
+    {
+      id: 2,
+      job: "checkin-config:other-site",
+      ownerId: 1,
+      success: true,
+      durationMs: 0,
+      detail: "admin#1 更新凭据",
+      createdAt: "2026-11-04T01:00:00.000Z",
+    },
+    {
+      id: 1,
+      job: "checkin:workbuddy-cn",
+      ownerId: 1,
+      success: true,
+      durationMs: 500,
+      detail: "success: 完成",
+      createdAt: "2026-11-03T01:00:00.000Z",
+    },
+  ];
+  let nextId = 100;
+  const configurations = [];
+  const cleared = [];
+  const executed = [];
+
+  const State = {
+    async findByPk(id) {
+      if (id !== "1:workbuddy-cn") return null;
+      return {
+        id,
+        lastCompletedDate: "2026-11-08",
+        leaseUntil: null,
+      };
+    },
+  };
+
+  const Run = {
+    async create(value) {
+      const row = {
+        id: nextId++,
+        createdAt: new Date().toISOString(),
+        ...value,
+      };
+      runRows.unshift(row);
+      return row;
+    },
+    async findOne({ where }) {
+      return sortRuns(runRows.filter((row) => matches(row, where)))[0] || null;
+    },
+    async findAll({ where, limit, offset }) {
+      return sortRuns(runRows.filter((row) => matches(row, where))).slice(
+        offset,
+        offset + limit,
+      );
+    },
+    async count({ where }) {
+      return runRows.filter((row) => matches(row, where)).length;
+    },
+  };
+
+  const service = {
+    configure: async (ownerId, id, value) => {
+      configurations.push({ ownerId, id, value });
+      return { task: id, ownerId, configured: true };
+    },
+    clear: async (ownerId, id) => {
+      cleared.push({ ownerId, id });
+      return { task: id, ownerId, configured: false };
+    },
+    runOne: async (ownerId, id, options) => {
+      executed.push({ ownerId, id, options });
+      return {
+        success: false,
+        results: [
+          {
+            task: id,
+            ownerId,
+            status: "failed",
+            summary: "上游超时",
+            recorded: true,
+          },
+        ],
+      };
+    },
+    runAll: async () => {
+      throw new Error("admin 路由不应触发整轮执行");
+    },
+  };
+
+  const modules = {
+    "../models/checkinState": State,
+    "../models/cronRun": Run,
+    "../services/checkins": {
+      tasks: [task],
+      dayKey: () => "2026-11-08",
+      accountId: (ownerId, taskId) => `${ownerId}:${taskId}`,
+      createCheckinService: () => service,
+    },
+    "../middleware/auth": {
+      authMiddleware(req, res, next) {
+        const authorization = req.headers.authorization;
+        if (authorization === "Bearer super") {
+          req.user = { id: 1, username: "root", role: "super_admin" };
+          return next();
+        }
+        if (authorization === "Bearer admin") {
+          req.user = { id: 2, username: "manager", role: "admin" };
+          return next();
+        }
+        return res.status(401).json({ success: false, error: "未授权" });
+      },
+    },
+    "../middleware/superAdmin": {
+      superAdminOnly(req, res, next) {
+        if (req.user?.role !== "super_admin")
+          return res.status(403).json({ success: false, error: "需要超级管理员权限" });
+        next();
+      },
+    },
+  };
+
+  const routerPath = require.resolve("../routes/checkins");
+  const previous = new Map([[routerPath, require.cache[routerPath]]]);
+  for (const [name, exports] of Object.entries(modules)) {
+    const path = require.resolve(name);
+    previous.set(path, require.cache[path]);
+    require.cache[path] = { id: path, filename: path, loaded: true, exports };
+  }
+  delete require.cache[routerPath];
+
+  const app = express();
+  app.use(express.json());
+  app.use("/api/checkins", require(routerPath));
+  app.use((error, req, res, next) => {
+    res.status(error.status || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+    });
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}/api/checkins`;
+  try {
+    await run({
+      request: (path, options = {}) =>
+        fetch(`${base}${path}`, {
+          ...options,
+          headers: {
+            Authorization: "Bearer super",
+            ...(options.headers || {}),
+          },
+        }),
+      runRows,
+      configurations,
+      cleared,
+      executed,
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    for (const [path, value] of previous) {
+      if (value) require.cache[path] = value;
+      else delete require.cache[path];
+    }
+    if (previousSecret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = previousSecret;
+  }
+}
+
+test("超管后台要求登录且只允许超级管理员", async () => {
+  await withRouter(async ({ request }) => {
+    assert.equal((await request("/admin/tasks", { headers: { Authorization: "" } })).status, 401);
+    assert.equal(
+      (await request("/admin/tasks", { headers: { Authorization: "Bearer admin" } })).status,
+      403,
+    );
+    assert.equal((await request("/admin/tasks")).status, 200);
+  });
+});
+
+test("任务列表只返回状态与字段元数据，不泄露凭据", async () => {
+  await withRouter(async ({ request }) => {
+    const response = await request("/admin/tasks");
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.ok(!text.includes("credentials"));
+    const body = JSON.parse(text);
+    const item = body.data.items[0];
+    assert.equal(item.id, "workbuddy-cn");
+    assert.equal(item.configured, true);
+    assert.equal(item.ownerId, 1);
+    assert.equal(item.todayCompleted, true);
+    assert.equal(item.lastRun.id, 6);
+    assert.equal(item.lastRun.success, false);
+    assert.equal(item.lastRun.durationMs, 800);
+    assert.equal(item.lastSuccessAt, "2026-11-03T01:00:00.000Z");
+    assert.equal(item.lastFailureAt, "2026-11-08T01:00:00.000Z");
+    assert.deepEqual(item.credentialFields, task.credentialFields);
+  });
+});
+
+test("超管保存凭据并写入审计，响应不回显密钥", async () => {
+  await withRouter(async ({ request, configurations, runRows }) => {
+    const value = { accessToken: "secret-access", refreshToken: "secret-refresh" };
+    const response = await request("/admin/credentials/workbuddy-cn", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.ok(!text.includes(value.accessToken) && !text.includes(value.refreshToken));
+    assert.deepEqual(configurations, [
+      { ownerId: 1, id: "workbuddy-cn", value },
+    ]);
+    const audit = runRows.find((row) => row.job === "checkin-config:workbuddy-cn");
+    assert.ok(audit);
+    assert.equal(audit.detail, "admin#1 更新凭据");
+  });
+});
+
+test("超管清除凭据并写入审计", async () => {
+  await withRouter(async ({ request, cleared, runRows }) => {
+    const response = await request("/admin/credentials/workbuddy-cn", { method: "DELETE" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(cleared, [{ ownerId: 1, id: "workbuddy-cn" }]);
+    const audit = runRows.find((row) => row.detail === "admin#1 清除凭据");
+    assert.ok(audit);
+    assert.equal(audit.job, "checkin-config:workbuddy-cn");
+  });
+});
+
+test("立即执行只跑指定任务，并原样返回失败原因", async () => {
+  await withRouter(async ({ request, executed }) => {
+    const response = await request("/admin/tasks/workbuddy-cn/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: true }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.success, true);
+    assert.equal(body.data.success, false);
+    assert.equal(body.data.results[0].status, "failed");
+    assert.equal(body.data.results[0].summary, "上游超时");
+    assert.deepEqual(executed, [
+      { ownerId: 1, id: "workbuddy-cn", options: { force: true } },
+    ]);
+  });
+});
+
+test("执行日志按站点与结果过滤，并排除配置审计", async () => {
+  await withRouter(async ({ request }) => {
+    const filtered = await request("/admin/logs?task=workbuddy-cn&success=false&limit=1");
+    assert.equal(filtered.status, 200);
+    const body = await filtered.json();
+    assert.equal(body.data.total, 2);
+    assert.equal(body.data.items.length, 1);
+    assert.equal(body.data.items[0].task, "workbuddy-cn");
+    assert.equal(body.data.items[0].success, false);
+
+    const all = await (await request("/admin/logs")).json();
+    assert.equal(all.data.total, 4);
+    assert.ok(all.data.items.every((item) => !item.task.includes("config")));
+  });
+});
+
+test("操作记录只读取配置审计任务", async () => {
+  await withRouter(async ({ request }) => {
+    const response = await request("/admin/audits");
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.data.total, 2);
+    assert.ok(body.data.items.every((item) => item.detail.startsWith("admin#1")));
+  });
+});
+
+test("分页参数非法时返回 400", async () => {
+  await withRouter(async ({ request }) => {
+    assert.equal((await request("/admin/logs?limit=0")).status, 400);
+    assert.equal((await request("/admin/logs?offset=-1")).status, 400);
+    assert.equal((await request("/admin/logs?success=maybe")).status, 400);
+    assert.equal((await request("/admin/logs?task=bad%20id")).status, 400);
+  });
+});

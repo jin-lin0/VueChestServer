@@ -231,12 +231,25 @@ function matches(row, where) {
   });
 }
 function fixture(run, count = 1) {
-  const rows = Array.from({ length: count }, (_, i) => ({
+  const ownerId = 1;
+  const registry = Array.from({ length: count }, (_, i) => ({
     id: String(i),
+    timeZone: "Asia/Shanghai",
+    run,
+    validateCredentials: (v) => v,
+  }));
+  const rows = Array.from({ length: count }, (_, i) => ({
+    id: `${ownerId}:${i}`,
+    ownerId,
+    taskId: String(i),
     lastCompletedDate: null,
     leaseUntil: null,
     leaseToken: null,
-    credentials: encryptCredentials(credentials, String(i), String(i)),
+    credentials: encryptCredentials(
+      credentials,
+      `${ownerId}:${i}`,
+      String(i),
+    ),
   }));
   const logs = [];
   const State = {
@@ -257,18 +270,21 @@ function fixture(run, count = 1) {
       const row = rows.find((r) => r.id === id);
       return row ? { ...row } : null;
     },
+    findAll: async ({ where }) =>
+      rows
+        .filter((row) => row.taskId === where.taskId)
+        .map((row) => ({ ownerId: row.ownerId })),
     update: async (values, { where }) => {
       const matched = rows.filter((row) => matches(row, where));
       matched.forEach((row) => Object.assign(row, values));
       return [matched.length];
     },
+    destroy: async ({ where }) => {
+      const matched = rows.filter((row) => matches(row, where));
+      for (const row of matched) rows.splice(rows.indexOf(row), 1);
+      return [matched.length];
+    },
   };
-  const registry = rows.map((r) => ({
-    id: r.id,
-    timeZone: "Asia/Shanghai",
-    run,
-    validateCredentials: (v) => v,
-  }));
   const deps = {
     State,
     Run: {
@@ -460,7 +476,7 @@ test("重新录入凭据后，当日也可重新核对上游", async (t) => {
     accessToken: "relogin-access",
     refreshToken: "relogin-refresh",
   };
-  await f.service.configure("0", changed);
+  await f.service.configure(1, "0", changed);
   await f.service.runAll();
   assert.deepEqual(seen, [credentials, changed]);
 });
@@ -480,18 +496,19 @@ test("首次录入按服务保存密文，响应只有状态；未知服务不�
   key(t);
   const f = fixture(() => assert.fail("只录入，不执行"));
   f.rows.splice(0);
-  assert.deepEqual(await f.service.configure("0", credentials), {
+  assert.deepEqual(await f.service.configure(1, "0", credentials), {
     task: "0",
+    ownerId: 1,
     configured: true,
   });
   assert.equal(f.rows.length, 1);
   assert.ok(!f.rows[0].credentials.includes(credentials.refreshToken));
   assert.deepEqual(
-    decryptCredentials(f.rows[0].credentials, "0", "0"),
+    decryptCredentials(f.rows[0].credentials, "1:0", "0"),
     credentials,
   );
   await assert.rejects(
-    () => f.service.configure("unknown", credentials),
+    () => f.service.configure(1, "unknown", credentials),
     (e) => e.status === 400,
   );
   assert.equal(f.rows.length, 1);
@@ -504,13 +521,13 @@ test("录入凭据不覆盖运行中的任务；租约过期后重新录入使�
   f.rows[0].leaseToken = "old-owner";
   f.rows[0].leaseUntil = new Date(Date.now() + 90000);
   await assert.rejects(
-    () => f.service.configure("0", credentials),
+    () => f.service.configure(1, "0", credentials),
     (e) => e.status === 409,
   );
   assert.equal(f.rows[0].credentials, before);
   f.rows[0].leaseUntil = new Date(Date.now() - 1);
   f.rows[0].lastCompletedDate = "2026-11-03";
-  await f.service.configure("0", credentials);
+  await f.service.configure(1, "0", credentials);
   assert.equal(f.rows[0].leaseToken, null);
   assert.equal(f.rows[0].leaseUntil, null);
   assert.equal(f.rows[0].lastCompletedDate, null);
@@ -522,7 +539,7 @@ test("加密密钥缺失时不写入凭据，不生成明文记录", async (t) =
   f.rows.splice(0);
   delete process.env.CHECKIN_ENCRYPTION_KEY;
   await assert.rejects(
-    () => f.service.configure("0", credentials),
+    () => f.service.configure(1, "0", credentials),
     /密钥未配置/,
   );
   assert.equal(f.rows.length, 0);
@@ -539,4 +556,109 @@ test("适配器额外返回的凭据字段不进入执行响应", async (t) => {
   assert.equal(result.results[0].status, "success");
   assert.equal(result.results[0].credentials, undefined);
   assert.ok(!JSON.stringify(result).includes(credentials.refreshToken));
+});
+
+test("立即执行只跑指定任务；force 可忽略当日幂等但仍受租约保护", async (t) => {
+  key(t);
+  let count = 0;
+  const f = fixture(async () => {
+    count++;
+    return { status: "success", summary: "完成" };
+  }, 2);
+  f.rows[0].lastCompletedDate = dayKey(Date.now(), "Asia/Shanghai");
+
+  const skipped = await f.service.runOne(1, "0");
+  assert.equal(skipped.results[0].status, "skipped");
+  assert.equal(count, 0);
+
+  const forced = await f.service.runOne(1, "0", { force: true });
+  assert.equal(forced.success, true);
+  assert.equal(forced.results[0].status, "success");
+  assert.equal(count, 1);
+  assert.equal(f.rows[1].lastCompletedDate, null);
+
+  f.rows[0].leaseUntil = new Date(Date.now() + 90000);
+  const busy = await f.service.runOne(1, "0", { force: true });
+  assert.equal(busy.success, true);
+  assert.equal(busy.results[0].status, "skipped");
+  assert.equal(count, 1);
+});
+
+test("清除凭据删除配置记录；执行中拒绝清除；未知任务报 400", async (t) => {
+  key(t);
+  const f = fixture(() => assert.fail("只清除，不执行"));
+  f.rows[0].leaseUntil = new Date(Date.now() + 90000);
+  await assert.rejects(
+    () => f.service.clear(1, "0"),
+    (error) => error.status === 409 && error.code === "CHECKIN_BUSY",
+  );
+  assert.equal(f.rows.length, 1);
+
+  f.rows[0].leaseUntil = new Date(Date.now() - 1);
+  assert.deepEqual(await f.service.clear(1, "0"), {
+    task: "0",
+    ownerId: 1,
+    configured: false,
+  });
+  assert.equal(f.rows.length, 0);
+  assert.deepEqual(await f.service.clear(1, "0"), {
+    task: "0",
+    ownerId: 1,
+    configured: false,
+  });
+  await assert.rejects(
+    () => f.service.clear(1, "unknown"),
+    (error) => error.status === 400,
+  );
+});
+
+test("同一站点的多个超管凭据互相隔离，定时轮次逐个执行", async (t) => {
+  key(t);
+  const seen = [];
+  const f = fixture(async ({ credentials: value }) => {
+    seen.push(value.accessToken);
+    return { status: "success", summary: "完成" };
+  });
+  const otherCredentials = {
+    accessToken: token("second-owner", "b"),
+    refreshToken: "second-refresh",
+  };
+  f.rows.push({
+    id: "2:0",
+    ownerId: 2,
+    taskId: "0",
+    lastCompletedDate: null,
+    leaseUntil: null,
+    leaseToken: null,
+    credentials: encryptCredentials(otherCredentials, "2:0", "0"),
+  });
+
+  const result = await f.service.runAll();
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    result.results.map((item) => item.ownerId),
+    [1, 2],
+  );
+  assert.deepEqual(seen.sort(), [
+    credentials.accessToken,
+    otherCredentials.accessToken,
+  ].sort());
+
+  const changed = {
+    accessToken: token("second-owner", "c"),
+    refreshToken: "rotated-second",
+  };
+  await f.service.configure(2, "0", changed);
+  assert.deepEqual(
+    decryptCredentials(f.rows[1].credentials, "2:0", "0"),
+    changed,
+  );
+  assert.deepEqual(
+    decryptCredentials(f.rows[0].credentials, "1:0", "0"),
+    credentials,
+  );
+
+  await f.service.clear(1, "0");
+  assert.equal(f.rows.length, 1);
+  assert.equal(f.rows[0].ownerId, 2);
 });

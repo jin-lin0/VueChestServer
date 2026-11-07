@@ -188,7 +188,26 @@ async function run({
 module.exports = {
   id: "workbuddy-cn",
   name: "WorkBuddy 国内版",
+  description: "每日签到领积分，令牌过期时自动续期并加密写回",
   timeZone: "Asia/Shanghai",
+  credentialFields: [
+    {
+      key: "accessToken",
+      label: "Access Token",
+      type: "password",
+      required: true,
+      placeholder: "eyJ...",
+      help: "WorkBuddy 国内版访问令牌",
+    },
+    {
+      key: "refreshToken",
+      label: "Refresh Token",
+      type: "password",
+      required: true,
+      placeholder: "eyJ...",
+      help: "用于自动续期，请与 Access Token 成对提供",
+    },
+  ],
   validateCredentials,
   run,
 };

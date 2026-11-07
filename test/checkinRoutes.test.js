@@ -13,9 +13,15 @@ async function withRouter(run) {
     "../models/cronRun": {},
     "../services/checkins": {
       createCheckinService: () => ({
-        configure: async (task, value) => {
-          configurations.push({ task, value });
-          return { task, configured: true };
+        configure: async (ownerId, task, value) => {
+          if (!ownerId) {
+            const error = new Error("缺少有效的签到归属用户");
+            error.status = 400;
+            error.code = "CHECKIN_OWNER_REQUIRED";
+            throw error;
+          }
+          configurations.push({ ownerId, task, value });
+          return { task, ownerId, configured: true };
         },
         runAll: async () => {
           executions++;
@@ -41,6 +47,13 @@ async function withRouter(run) {
   const app = express();
   app.use(express.json());
   app.use("/api/checkins", require(routerPath));
+  app.use((error, req, res, next) => {
+    res.status(error.status || 500).json({
+      success: false,
+      error: error.message,
+      code: error.code,
+    });
+  });
   const server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
   try {
@@ -158,7 +171,7 @@ test("凭据录入仅需 Cron 密钥，拒绝网站管理员令牌且不提供�
     const options = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(value),
+      body: JSON.stringify({ ...value, ownerId: 1 }),
     };
     const url = "/credentials/workbuddy-cn";
     assert.equal((await request(url, options)).status, 401);
@@ -184,7 +197,15 @@ test("凭据录入仅需 Cron 密钥，拒绝网站管理员令牌且不提供�
     assert.ok(
       !text.includes(value.accessToken) && !text.includes(value.refreshToken),
     );
-    assert.deepEqual(configurations, [{ task: "workbuddy-cn", value }]);
+    assert.deepEqual(configurations, [
+      { ownerId: 1, task: "workbuddy-cn", value },
+    ]);
+    const missingOwner = await request(url, {
+      ...options,
+      body: JSON.stringify(value),
+      headers: { ...options.headers, Authorization: "Bearer test-cron-secret" },
+    });
+    assert.equal(missingOwner.status, 400);
     assert.equal(
       (
         await request(url, {
