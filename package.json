@@ -12,6 +12,7 @@
     "dev": "nodemon index.js",
     "test": "node --test",
     "test:platform": "node scripts/integration-platform.js",
+    "checkin": "node scripts/checkin-credentials/index.js",
     "schema:check": "node scripts/schema-check.js",
     "reset:market": "node scripts/reset-market-apps.js"
   },

@@ -227,6 +227,23 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 也可以在环境变量 `CHECKIN_OWNER_ID` 中指定默认归属，省去每次传 `ownerId`。录入不执行签到，也不返回凭据；录入后调用 POST 执行入口验证。刷新后的令牌自动加密写回，重新登录后仍通过同一 PUT 接口替换。任务执行中拒绝覆盖（409）。加密密钥丢失或更换后，需要迁移密文或重新录入凭据。
 
+### 凭据从哪来
+
+WorkBuddy 的 AT/RT 只能用短信验证码登录换取，因此登录流程也放在本仓库，不依赖外部项目：
+
+```bash
+cd VueChestServer
+pnpm checkin                              # 方向键选站点，回车后走该站点登录
+pnpm checkin workbuddy-cn                 # 直接指定站点
+pnpm checkin workbuddy-cn --dry-run       # 只打印凭据，不改数据库
+```
+
+不写站点时进入交互式选择（↑/↓ 移动、回车确认），避免记站点 ID、也避免把凭据写到错误任务上。
+
+选定站点后，脚本按该站点的登录方式取凭据：WorkBuddy 是发短信 → 输入验证码 → 换到 AT/RT，再调用一次续期接口验证可用性。**续期会轮换令牌**，所以脚本默认保存轮换后的新值，并直接走 `configure()` 加密入库，无需再手工调 PUT 接口。
+
+参数分两层：通用入口只认 `--owner <超管ID>`（默认取唯一启用的 super_admin，多个时必须显式指定）和 `--dry-run`；`--phone` / `--code` / `--no-verify` 是 `workbuddy-cn` 自己的站点参数——各站点登录方式不同（短信、Cookie、账密……），所以由站点脚本解析。`pnpm checkin --help` 看站点清单，`pnpm checkin workbuddy-cn --help` 看该站点参数。新增站点时在 `scripts/checkin-credentials/` 下加一份登录脚本、注册进 `index.js` 的 `providers`，交互列表会自动带出该站点。
+
 计划每天 UTC 01:17（北京时间 09:17）运行，Hobby 可能延迟。最多并发两个账号任务，总预算默认 240 秒、单任务 60 秒，可用 `CHECKIN_BUDGET_MS` 和 `CHECKIN_TASK_TIMEOUT_MS` 调整；两者都要小于部署后的函数时长。多超管各自配置后，预算要覆盖全部「超管 × 站点」账号，站点或超管增加时需同步评估。数据库租约协调跨实例并发，同一归属账号在业务日期完成后跳过，失败可补跑。
 
 结果在 `results` 中，并带 `ownerId` 区分归属：`success` / `already_done` 表示上游确认已签；`unconfigured` 表示未录入；`inactive` 表示活动未开放；`failed` / `deferred` 表示失败或预算不足。部分失败时返回 502，其他任务继续执行；Vercel 不会自动重试失败的 Cron。脱敏执行摘要存入 `cron_runs`。
