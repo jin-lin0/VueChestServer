@@ -10,6 +10,7 @@ on:
 
 jobs:
   checkin:
+    name: 掘金签到
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
