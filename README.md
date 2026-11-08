@@ -53,7 +53,6 @@ pnpm install
 | `RESEND_FROM`          | 发件人整串（优先于 DOMAIN）      | `VueChest <noreply@x.com>` |
 | `RESEND_DOMAIN`        | 发件人域名（未配 FROM 时使用）   | `example.com`              |
 | `CRON_SECRET`          | Vercel Cron 鉴权密钥             | 随机长串                   |
-| `STOCK_DIGEST_TO`      | 策略日报收件人（逗号分隔）       | `a@x.com,b@y.com`          |
 | `STOCK_DIGEST_STRATEGIES` | 可选，覆盖默认策略 id         | `macd_golden,ma_long`      |
 
 ### 3. 启动服务
@@ -175,8 +174,11 @@ pnpm start
 curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CRON_SECRET"
 ```
 
-**可观测性**：每次执行（含邮件失败）写入 `cron_runs`，失败时向 `STOCK_DIGEST_TO`
-发告警邮件。登录用户可读 `GET /api/stock-digest/history?days=30`（战绩数据），
+**收件人**：策略日报与失败告警都发往「启用且已填邮箱的超级管理员」，
+每个超管收到自己那一封，不再依赖环境变量配置收件人。
+
+**可观测性**：每次执行（含邮件失败）写入 `cron_runs`，失败时向所有超管发告警邮件。
+登录用户可读 `GET /api/stock-digest/history?days=30`（战绩数据），
 管理员可读 `GET /api/stock-digest/runs`（最近执行记录）。
 
 **超时保护**：生产区域访问国内上游明显慢于本地，因此设置了整体预算（默认 40s）：
@@ -197,27 +199,27 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 > 日报会在第 10 秒被 Vercel 杀掉并返回 504（`FUNCTION_INVOCATION_TIMEOUT`）。
 > 开启后 Hobby 默认可运行 300s。
 
-## 每日签到
+## 每日任务
 
 定时触发与机器写入入口使用 Cron 密钥，与 VueChest 登录和管理员角色无关。所有 Cron 入口均验证 `Authorization: Bearer <CRON_SECRET>`；缺失或错误返回 401。超管后台入口使用独立的登录态与角色校验，见下一节。
 
 | 接口 | 用途 |
 | --- | --- |
-| `GET /api/checkins/run` | Vercel 每日触发 |
-| `POST /api/checkins/run` | 手动补跑 |
-| `PUT /api/checkins/credentials/:task` | 机器写入凭据，只写不读；body 需带 `ownerId` |
-| `GET /api/checkins/credentials/:task` | 仅 worker 执行型任务可读，供外部 worker 取凭据 |
-| `POST /api/checkins/report` | 外部 worker 上报执行结果 |
+| `GET /api/daily/run` | Vercel 每日触发 |
+| `POST /api/daily/run` | 手动补跑 |
+| `PUT /api/daily/credentials/:task` | 机器写入凭据，只写不读；body 需带 `ownerId` |
+| `GET /api/daily/credentials/:task` | 仅 worker 执行型任务可读，供外部 worker 取凭据 |
+| `POST /api/daily/report` | 外部 worker 上报执行结果 |
 
-部署前确保 `checkin_states` 和 `cron_runs` 已存在；表结构由模型定义，`pnpm schema:check` 可检查结构差异。Vercel 运行时不会自动建表。全新环境直接启动一次服务即可建表；本项目不保留旧结构兼容，旧库升级直接删除 `checkin_states` 重建并重新录入凭据。
+部署前确保 `daily_task_states` 和 `cron_runs` 已存在；表结构由模型定义，`pnpm schema:check` 可检查结构差异。Vercel 运行时不会自动建表。全新环境直接启动一次服务即可建表；本项目不保留旧结构兼容，旧库升级直接删除 `daily_task_states` 重建并重新录入凭据。
 
-复用 `CRON_SECRET`，另配置 `CHECKIN_ENCRYPTION_KEY`（32 字节密钥，编码为 64 个十六进制字符，无默认值）。所有站点凭据统一加密存库，不按站点新增环境变量。时间预算可用 `CHECKIN_BUDGET_MS`（整轮，默认 240000）和 `CHECKIN_TASK_TIMEOUT_MS`（单任务，默认 60000）覆盖。密钥生成命令：
+复用 `CRON_SECRET`，另配置 `DAILY_ENCRYPTION_KEY`（32 字节密钥，编码为 64 个十六进制字符，无默认值）。所有站点凭据统一加密存库，不按站点新增环境变量。时间预算可用 `DAILY_BUDGET_MS`（整轮，默认 240000）和 `DAILY_TASK_TIMEOUT_MS`（单任务，默认 60000）覆盖。密钥生成命令：
 
 ```bash
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-通过 HTTPS 向 `PUT /api/checkins/credentials/workbuddy-cn` 提交凭据（`ownerId` 为归属超管）：
+通过 HTTPS 向 `PUT /api/daily/credentials/workbuddy-cn` 提交凭据（`ownerId` 为归属超管）：
 
 ```json
 {
@@ -235,18 +237,18 @@ WorkBuddy 的 AT/RT 只能用短信验证码登录换取，因此登录流程也
 
 ```bash
 cd VueChestServer
-pnpm checkin                              # 方向键选站点，回车后走该站点登录
-pnpm checkin workbuddy-cn                 # 直接指定站点
-pnpm checkin workbuddy-cn --dry-run       # 只打印凭据，不改数据库
+pnpm login                                # 方向键选站点，回车后走该站点登录
+pnpm login workbuddy-cn                   # 直接指定站点
+pnpm login workbuddy-cn --dry-run         # 只打印凭据，不改数据库
 ```
 
 不写站点时进入交互式选择（↑/↓ 移动、回车确认），避免记站点 ID、也避免把凭据写到错误任务上。
 
 选定站点后，脚本按该站点的登录方式取凭据：WorkBuddy 是发短信 → 输入验证码 → 换到 AT/RT，再调用一次续期接口验证可用性。**续期会轮换令牌**，所以脚本默认保存轮换后的新值，并直接走 `configure()` 加密入库，无需再手工调 PUT 接口。
 
-参数分两层：通用入口只认 `--owner <超管ID>`（默认取唯一启用的 super_admin，多个时必须显式指定）和 `--dry-run`；`--phone` / `--code` / `--no-verify` 是 `workbuddy-cn` 自己的站点参数——各站点登录方式不同（短信、Cookie、账密……），所以由站点脚本解析。`pnpm checkin --help` 看站点清单，`pnpm checkin workbuddy-cn --help` 看该站点参数。新增站点时在 `scripts/checkin-credentials/` 下加一份登录脚本、注册进 `index.js` 的 `providers`，交互列表会自动带出该站点。
+参数分两层：通用入口只认 `--owner <超管ID>`（默认取唯一启用的 super_admin，多个时必须显式指定）和 `--dry-run`；`--phone` / `--code` / `--no-verify` 是 `workbuddy-cn` 自己的站点参数——各站点登录方式不同（短信、Cookie、账密……），所以由站点脚本解析。`pnpm login --help` 看站点清单，`pnpm login workbuddy-cn --help` 看该站点参数。新增站点时在 `scripts/site-login/` 下加一份登录脚本、注册进 `index.js` 的 `providers`，交互列表会自动带出该站点。
 
-计划每天 UTC 01:17（北京时间 09:17）运行，Hobby 可能延迟。最多并发两个账号任务，总预算默认 240 秒、单任务 60 秒，可用 `CHECKIN_BUDGET_MS` 和 `CHECKIN_TASK_TIMEOUT_MS` 调整；两者都要小于部署后的函数时长。多超管各自配置后，预算要覆盖全部「超管 × 站点」账号，站点或超管增加时需同步评估。数据库租约协调跨实例并发，同一归属账号在业务日期完成后跳过，失败可补跑。
+计划每天 UTC 01:17（北京时间 09:17）运行，Hobby 可能延迟。最多并发两个账号任务，总预算默认 240 秒、单任务 60 秒，可用 `DAILY_BUDGET_MS` 和 `DAILY_TASK_TIMEOUT_MS` 调整；两者都要小于部署后的函数时长。多超管各自配置后，预算要覆盖全部「超管 × 站点」账号，站点或超管增加时需同步评估。数据库租约协调跨实例并发，同一归属账号在业务日期完成后跳过，失败可补跑。
 
 结果在 `results` 中，并带 `ownerId` 区分归属：`success` / `already_done` 表示上游确认已签；`unconfigured` 表示未录入；`inactive` 表示活动未开放；`failed` / `deferred` 表示失败或预算不足。部分失败时返回 502，其他任务继续执行；Vercel 不会自动重试失败的 Cron。脱敏执行摘要存入 `cron_runs`。
 
@@ -261,15 +263,15 @@ pnpm checkin workbuddy-cn --dry-run       # 只打印凭据，不改数据库
 - 真正的签到与免费抽奖在 [`workers/`](workers/README.md) 里用 Chromium 完成，
   由 [`.github/workflows/juejin-checkin.yml`](.github/workflows/juejin-checkin.yml) 每天 UTC 22:00 触发。
 
-配置步骤：超管后台 `/admin/checkins` 填掘金 Cookie（只填 `sessionid` 的值也可以，会自动补全）；
-GitHub 仓库里配 Variable `CHECKIN_SERVER` 和 Secret `CRON_SECRET`，
+配置步骤：超管后台 `/admin/daily` 填掘金 Cookie（只填 `sessionid` 的值也可以，会自动补全）；
+GitHub 仓库里配 Variable `DAILY_SERVER` 和 Secret `CRON_SECRET`，
 然后在 Actions 里手动跑一次 `workflow_dispatch` 验证。
 归属超管不用写进 CI：worker 先取"已配置掘金的超管列表"，再逐个执行，一次运行覆盖所有超管。
-只有想单独跑某一个超管时才需要 `CHECKIN_OWNER_ID`。
+只有想单独跑某一个超管时才需要 `DAILY_OWNER_ID`。
 
 ### 超管后台
 
-超级管理员可在 `/admin/checkins` 页面完成日常运维，不必再手动 `curl`：
+超级管理员可在 `/admin/daily` 页面完成日常运维，不必再手动 `curl`：
 
 - 查看每个签到站点的配置状态、今日完成情况、最近执行结果与失败摘要。
 - 按适配器声明的 `credentialFields` 动态渲染凭据表单，保存后立即生效。
@@ -280,26 +282,33 @@ GitHub 仓库里配 Variable `CHECKIN_SERVER` 和 Secret `CRON_SECRET`，
 
 | 接口 | 权限 | 用途 |
 | --- | --- | --- |
-| `GET /api/checkins/admin/tasks` | `super_admin` | 任务状态与凭据字段元数据 |
-| `PUT /api/checkins/admin/credentials/:task` | `super_admin` | 保存或替换凭据 |
-| `DELETE /api/checkins/admin/credentials/:task` | `super_admin` | 清除凭据（停用任务） |
-| `POST /api/checkins/admin/tasks/:task/run` | `super_admin` | 单任务立即执行，body 可传 `{"force":true}` |
-| `GET /api/checkins/admin/logs` | `super_admin` | 执行日志，支持 `task`、`success`、`limit`、`offset` |
-| `GET /api/checkins/admin/audits` | `super_admin` | 配置操作审计，支持 `task`、`limit`、`offset` |
+| `GET /api/daily/admin/tasks` | `super_admin` | 任务状态与凭据字段元数据 |
+| `PUT /api/daily/admin/credentials/:task` | `super_admin` | 保存或替换凭据 |
+| `DELETE /api/daily/admin/credentials/:task` | `super_admin` | 清除凭据（停用任务） |
+| `PUT /api/daily/admin/tasks/:task/enabled` | `super_admin` | 暂停/恢复定时执行，body `{"enabled":false}` |
+| `POST /api/daily/admin/tasks/:task/run` | `super_admin` | 单任务立即执行，body 可传 `{"force":true}` |
+| `GET /api/daily/admin/logs` | `super_admin` | 执行日志，支持 `task`、`success`、`limit`、`offset` |
+| `GET /api/daily/admin/audits` | `super_admin` | 配置操作审计，支持 `task`、`limit`、`offset` |
 
-凭据始终只写不读：接口响应、日志和页面都不会回显 Access Token、Refresh Token 或 Cookie。数据库中也只保存 AES-256-GCM 密文，不提供明文录入或“是否加密”开关。若确实需要直接在数据库录入，必须自行按既有格式生成密文；否则请在后台页面或使用 `PUT /api/checkins/credentials/:task` 写入。
+凭据始终只写不读：接口响应、日志和页面都不会回显 Access Token、Refresh Token 或 Cookie。数据库中也只保存 AES-256-GCM 密文，不提供明文录入或“是否加密”开关。若确实需要直接在数据库录入，必须自行按既有格式生成密文；否则请在后台页面或使用 `PUT /api/daily/credentials/:task` 写入。
 
-审计与执行记录复用 `cron_runs`，按 `job` 前缀区分：执行记录为 `checkin:<task>`，配置操作为 `checkin-config:<task>`，两种记录都带 `ownerId`。日志查询会同时按归属用户过滤并显式排除配置审计，避免跨超管读取或混入签到结果。
+审计与执行记录复用 `cron_runs`，按 `job` 前缀区分：执行记录为 `daily:<task>`，配置操作为 `daily-config:<task>`，两种记录都带 `ownerId`。日志查询会同时按归属用户过滤并显式排除配置审计，避免跨超管读取或混入签到结果。
+
+失败告警按账号维度发送：站点执行失败或 worker 上报 `failed` 时，邮件只发给该凭据归属的超管邮箱（`users.email`）。超管未配置邮箱时不发信，只保留 `cron_runs` 记录；告警发送失败也不会改变任务结果。
+
+超管后台页面叫「每日任务」：签到站点之外，策略选股日报也作为全局任务列出（`id = stock-digest`），可以在这里查看最近结果并手动触发。它不涉及凭据，也不会写入 `daily_task_states`；执行记录仍落在 `cron_runs`（`job = stock-digest`），并会出现在同一个执行日志里。
+
+每个任务卡片带暂停开关，状态存在 `daily_task_states.enabled`（日报用 `ownerId:stock-digest` 这一行）。暂停只影响定时轮次和 worker 账号列表，凭据保留，手动执行仍然放行；日报暂停后该超管不再收到日报和日报告警。
 
 ### 签到数据归属
 
-`checkin_states` 以「超管 + 站点」为最小单位：
+`daily_task_states` 以「超管 + 站点」为最小单位：
 
 - `ownerId` 指向 `users.id`，`taskId` 是适配器标识；`id` 为 `${ownerId}:${taskId}`。
 - 唯一索引为 `(ownerId, taskId)`，同一超管对同一站点只有一行，不同超管互不覆盖。
 - 凭据密文使用 AES-256-GCM，AAD 绑定 `id + taskId`；不保留旧单租户密文兼容。
 
-> ⚠️ 本项目不做向后兼容。表结构或密文格式变化时，直接清空 `checkin_states`
+> ⚠️ 本项目不做向后兼容。表结构或密文格式变化时，直接清空 `daily_task_states`
 > 后由超管在后台重新录入凭据，不增加兼容分支。
 
 ## 部署到 Vercel

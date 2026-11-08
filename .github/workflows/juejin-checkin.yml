@@ -31,7 +31,7 @@ jobs:
 
       - name: 执行签到
         env:
-          CHECKIN_SERVER: ${{ vars.CHECKIN_SERVER }}
+          DAILY_SERVER: ${{ vars.DAILY_SERVER }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: node run.js juejin
 

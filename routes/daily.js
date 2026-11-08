@@ -1,20 +1,31 @@
 const express = require("express");
 const { Op } = require("sequelize");
-const State = require("../models/checkinState");
+const State = require("../models/dailyTaskState");
 const Run = require("../models/cronRun");
 const cronAuth = require("../middleware/cronAuth");
 const { authMiddleware } = require("../middleware/auth");
 const { superAdminOnly } = require("../middleware/superAdmin");
-const { CheckinError } = require("../utils/checkinCredentials");
+const { TaskError } = require("../utils/taskCredentials");
 const {
   tasks,
   dayKey,
   accountId,
-  createCheckinService,
-} = require("../services/checkins");
+  createDailyTaskService,
+} = require("../services/daily");
+const { runStockDigest } = require("../services/stockDigestJob");
 
-const service = createCheckinService({ State, Run });
+const service = createDailyTaskService({ State, Run });
 const router = express.Router();
+
+// 不属于签到、但同样按天执行的全局任务。收进「每日任务」页面统一查看与触发。
+const GLOBAL_TASKS = [
+  {
+    id: "stock-digest",
+    name: "策略选股日报",
+    description: "工作日生成策略报告并发送到每个超管邮箱",
+    timeZone: "Asia/Shanghai",
+  },
+];
 
 async function run(req, res) {
   const result = await service.runAll();
@@ -89,21 +100,21 @@ function taskMeta(task) {
 async function audit(task, user, action) {
   try {
     await Run.create({
-      job: `checkin-config:${task}`,
+      job: `daily-config:${task}`,
       ownerId: user.id,
       success: true,
       durationMs: 0,
       detail: `admin#${user.id} ${action}`,
     });
   } catch (error) {
-    console.error("[checkins] 操作审计落库失败:", error.message);
+    console.error("[daily] 操作审计落库失败:", error.message);
   }
 }
 
 function parseTaskParam(value) {
   if (value === undefined) return "";
   if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,40}$/.test(value))
-    throw new CheckinError("签到任务标识不合法", "INVALID_CHECKIN_TASK", 400);
+    throw new TaskError("任务标识不合法", "INVALID_DAILY_TASK", 400);
   return value;
 }
 
@@ -111,9 +122,9 @@ function parseSuccess(value) {
   if (value === undefined || value === "") return undefined;
   if (value === "true") return true;
   if (value === "false") return false;
-  throw new CheckinError(
+  throw new TaskError(
     "success 只能是 true 或 false",
-    "INVALID_CHECKIN_FILTER",
+    "INVALID_DAILY_FILTER",
     400,
   );
 }
@@ -122,34 +133,41 @@ function parsePaging(query) {
   const rawLimit = query.limit === undefined ? 30 : Number(query.limit);
   const rawOffset = query.offset === undefined ? 0 : Number(query.offset);
   if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 100)
-    throw new CheckinError(
+    throw new TaskError(
       "limit 必须是 1 到 100 之间的整数",
-      "INVALID_CHECKIN_PAGING",
+      "INVALID_DAILY_PAGING",
       400,
     );
   if (!Number.isInteger(rawOffset) || rawOffset < 0)
-    throw new CheckinError(
+    throw new TaskError(
       "offset 必须是非负整数",
-      "INVALID_CHECKIN_PAGING",
+      "INVALID_DAILY_PAGING",
       400,
     );
   return { limit: rawLimit, offset: rawOffset };
 }
 
-function executionJobWhere(task) {
-  if (task) return { job: `checkin:${task}` };
-  // checkin-config: 也以 checkin: 开头，必须显式排除。
+function executionJobWhere(task, ownerId) {
+  if (task === "stock-digest") return { job: "stock-digest" };
+  if (task) return { job: `daily:${task}`, ownerId };
+  // daily-config: 也以 daily: 开头，必须显式排除。
   return {
-    [Op.and]: [
-      { job: { [Op.like]: "checkin:%" } },
-      { job: { [Op.notLike]: "checkin-config:%" } },
+    [Op.or]: [
+      {
+        [Op.and]: [
+          { ownerId },
+          { job: { [Op.like]: "daily:%" } },
+          { job: { [Op.notLike]: "daily-config:%" } },
+        ],
+      },
+      { job: "stock-digest" },
     ],
   };
 }
 
 function auditJobWhere(task) {
   return {
-    job: task ? `checkin-config:${task}` : { [Op.like]: "checkin-config:%" },
+    job: task ? `daily-config:${task}` : { [Op.like]: "daily-config:%" },
   };
 }
 
@@ -159,11 +177,11 @@ function auditJobWhere(task) {
 router.get("/admin/tasks", authMiddleware, superAdminOnly, async (req, res) => {
   const items = await Promise.all(
     tasks.map(async (task) => {
-      const job = `checkin:${task.id}`;
+      const job = `daily:${task.id}`;
       const ownerId = req.user.id;
       const [state, lastRun, lastSuccess, lastFailure] = await Promise.all([
         State.findByPk(accountId(ownerId, task.id), {
-          attributes: ["id", "lastCompletedDate", "leaseUntil"],
+          attributes: ["id", "enabled", "lastCompletedDate", "leaseUntil"],
         }),
         Run.findOne({
           where: { job, ownerId },
@@ -182,6 +200,7 @@ router.get("/admin/tasks", authMiddleware, superAdminOnly, async (req, res) => {
         ...taskMeta(task),
         ownerId,
         configured: !!state,
+        enabled: state?.enabled !== false,
         running: !!(
           state?.leaseUntil && new Date(state.leaseUntil).getTime() > Date.now()
         ),
@@ -195,7 +214,37 @@ router.get("/admin/tasks", authMiddleware, superAdminOnly, async (req, res) => {
       };
     }),
   );
-  res.json({ success: true, data: { items } });
+  const globals = await Promise.all(
+    GLOBAL_TASKS.map(async (task) => {
+      const job = task.id;
+      const [lastRun, lastSuccess, lastFailure, state] = await Promise.all([
+        Run.findOne({ where: { job }, order: [["id", "DESC"]] }),
+        Run.findOne({ where: { job, success: true }, order: [["id", "DESC"]] }),
+        Run.findOne({ where: { job, success: false }, order: [["id", "DESC"]] }),
+        State.findByPk(accountId(req.user.id, task.id), {
+          attributes: ["enabled"],
+        }),
+      ]);
+      const today = dayKey(Date.now(), task.timeZone);
+      const completed =
+        !!lastRun?.success && dayKey(lastRun.createdAt, task.timeZone) === today;
+      return {
+        ...task,
+        executor: "server",
+        requiresCredentials: false,
+        enabled: state?.enabled !== false,
+        credentialFields: [],
+        configured: true,
+        running: false,
+        todayCompleted: completed,
+        lastCompletedDate: completed ? today : null,
+        lastRun: serializeRun(lastRun),
+        lastSuccessAt: lastSuccess?.createdAt || null,
+        lastFailureAt: lastFailure?.createdAt || null,
+      };
+    }),
+  );
+  res.json({ success: true, data: { items: [...items, ...globals] } });
 });
 
 router.put(
@@ -224,11 +273,64 @@ router.delete(
   },
 );
 
+router.put(
+  "/admin/tasks/:task/enabled",
+  authMiddleware,
+  superAdminOnly,
+  async (req, res) => {
+    const taskId = parseTaskParam(req.params.task);
+    if (typeof req.body?.enabled !== "boolean")
+      throw new TaskError(
+        "enabled 必须是布尔值",
+        "INVALID_DAILY_ENABLED",
+        400,
+      );
+    const enabled = req.body.enabled;
+    if (taskId === "stock-digest") {
+      const id = accountId(req.user.id, taskId);
+      const [, created] = await State.findOrCreate({
+        where: { id },
+        defaults: {
+          ownerId: req.user.id,
+          taskId,
+          credentials: "",
+          enabled,
+        },
+      });
+      if (!created) await State.update({ enabled }, { where: { id } });
+      return res.json({
+        success: true,
+        data: { task: taskId, ownerId: req.user.id, enabled },
+      });
+    }
+    const data = await service.setEnabled(req.user.id, taskId, enabled);
+    res.json({ success: true, data });
+  },
+);
+
 router.post(
   "/admin/tasks/:task/run",
   authMiddleware,
   superAdminOnly,
   async (req, res) => {
+    if (req.params.task === "stock-digest") {
+      const outcome = await runStockDigest();
+      let result;
+      if (!outcome.success) {
+        result = { status: "failed", summary: outcome.error };
+      } else if (outcome.result.skipped) {
+        result = { status: "skipped", summary: "已暂停策略日报，本次跳过" };
+      } else {
+        result = {
+          status: "success",
+          summary: `发送 ${outcome.result.mails.length} 封；采集 ${outcome.result.collected.length}/${outcome.result.requested} 个策略`,
+        };
+      }
+      return res.json({
+        success: true,
+        data: { success: outcome.success, results: [{ task: "stock-digest", ...result }] },
+      });
+    }
     const data = await service.runOne(req.user.id, req.params.task, {
       force: req.body?.force === true,
     });
@@ -246,8 +348,7 @@ router.get(
     const task = parseTaskParam(req.query.task);
     const success = parseSuccess(req.query.success);
     const { limit, offset } = parsePaging(req.query);
-    const where = executionJobWhere(task);
-    where.ownerId = req.user.id;
+    const where = executionJobWhere(task, req.user.id);
     if (success !== undefined) where.success = success;
     const [rows, total] = await Promise.all([
       Run.findAll({ where, order: [["id", "DESC"]], limit, offset }),
@@ -258,7 +359,7 @@ router.get(
       data: {
         items: rows.map((row) => ({
           ...serializeRun(row),
-          task: String(row.job || "").replace(/^checkin:/, ""),
+          task: String(row.job || "").replace(/^daily:/, ""),
         })),
         total,
         limit,
@@ -286,7 +387,7 @@ router.get(
       data: {
         items: rows.map((row) => ({
           ...serializeRun(row),
-          task: String(row.job || "").replace(/^checkin-config:/, ""),
+          task: String(row.job || "").replace(/^daily-config:/, ""),
         })),
         total,
         limit,

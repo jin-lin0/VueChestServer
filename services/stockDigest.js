@@ -460,7 +460,7 @@ function renderEmail({ dateLabel, windowAccuracyMap, collected, accuracyMap }) {
  * 日报主流程：评估昨日 → 采集今日 → 聚合历史正确率 → 发邮件。
  * 三步彼此尽量独立：单个策略采集失败不影响其余策略与邮件发送。
  */
-async function runDailyDigest() {
+async function runDailyDigest({ recipients }) {
   const startedAt = Date.now();
   const deadline = startedAt + TOTAL_BUDGET_MS;
   const phase = (label) => console.log(`[stock-digest] ${label} +${Date.now() - startedAt}ms`);
@@ -510,23 +510,29 @@ async function runDailyDigest() {
   const windowAccuracyMap = await windowedAccuracy();
   phase("正确率聚合完成");
 
-  const to = (process.env.STOCK_DIGEST_TO || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!to.length) {
-    throw Object.assign(new Error("未配置 STOCK_DIGEST_TO 环境变量（收件人）"), {
-      status: 500,
-    });
-  }
-
+  // 收件人由调用方解析：超管账号邮箱，并已过滤掉关掉日报的人。
+  const targets = recipients;
   const dateLabel = beijingToday();
-  const mail = await sendHtmlMail({
-    to,
-    subject: `【VueChest】策略选股日报 ${dateLabel}`,
-    html: renderEmail({ dateLabel, windowAccuracyMap, collected, accuracyMap }),
-  });
-  phase(mail.success ? "邮件已发送" : `邮件发送失败：${mail.error}`);
+  const html = renderEmail({ dateLabel, windowAccuracyMap, collected, accuracyMap });
+  const mails = [];
+  for (const recipient of targets) {
+    const mail = await sendHtmlMail({
+      to: recipient.email,
+      subject: `【VueChest】策略选股日报 ${dateLabel}`,
+      html,
+    });
+    mails.push({
+      ownerId: recipient.ownerId,
+      email: recipient.email,
+      success: mail.success,
+      error: mail.error,
+    });
+    phase(
+      mail.success
+        ? `邮件已发送至 ${recipient.email}`
+        : `邮件发送至 ${recipient.email} 失败：${mail.error}`,
+    );
+  }
 
   return {
     date: dateLabel,
@@ -543,7 +549,7 @@ async function runDailyDigest() {
       signalDate: c.signalDate,
       picks: c.picks.length,
     })),
-    mail,
+    mails,
   };
 }
 

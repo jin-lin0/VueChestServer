@@ -32,9 +32,9 @@ test("worker 客户端带 Bearer 密钥，按站点取账号与凭据并上报",
   assert.deepEqual(await client.credentials("juejin", 3), { cookie: "sessionid=x" });
   await client.report("juejin", 3, { status: "success", summary: "ok", durationMs: 10 });
 
-  assert.match(calls[0].url, /^https:\/\/example\.test\/api\/checkins\/workers\/juejin\/owners$/);
+  assert.match(calls[0].url, /^https:\/\/example\.test\/api\/daily\/workers\/juejin\/owners$/);
   assert.match(calls[1].url, /\/credentials\/juejin\?ownerId=3$/);
-  assert.equal(calls[2].url, "https://example.test/api/checkins/report");
+  assert.equal(calls[2].url, "https://example.test/api/daily/report");
   assert.deepEqual(JSON.parse(calls[2].options.body), {
     status: "success",
     summary: "ok",
@@ -199,7 +199,7 @@ test("上报失败不会中断后续超管，但会计入失败数", async (t) =
   assert.equal(call, 2);
 });
 
-test("指定 CHECKIN_OWNER_ID 时只跑该超管，不请求账号列表", async (t) => {
+test("指定 DAILY_OWNER_ID 时只跑该超管，不请求账号列表", async (t) => {
   const f = fixture({ owners: [2, 3], run: async () => ({ status: "success", summary: "ok" }) });
   f.client.ownerIds = async () => assert.fail("不应请求账号列表");
   const result = await runTask({
@@ -207,7 +207,7 @@ test("指定 CHECKIN_OWNER_ID 时只跑该超管，不请求账号列表", async
     flow: f.flow,
     client: f.client,
     launcher: { launch: async () => fakeBrowser(f.events) },
-    env: { CHECKIN_OWNER_ID: "3" },
+    env: { DAILY_OWNER_ID: "3" },
     log: () => {},
     debugDir: tempDir(t),
   });

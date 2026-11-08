@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { moveIndex, optionLines } = require("../scripts/checkin-credentials/prompt-select");
+const { moveIndex, optionLines } = require("../scripts/site-login/prompt-select");
 
 test("方向键在首尾循环，不会越界", () => {
   assert.equal(moveIndex(0, -1, 3), 2);

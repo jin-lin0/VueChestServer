@@ -111,7 +111,7 @@ app.use("/api/westock", westockRouter);
 const stockDigestRouter = require("./routes/stockDigest");
 app.use("/api/stock-digest", stockDigestRouter);
 
-app.use("/api/checkins", require("./routes/checkins"));
+app.use("/api/daily", require("./routes/daily"));
 
 // 同步数据库模型（Vercel 环境跳过，避免多实例冷启动同时抢连接阻塞业务请求）
 if (!process.env.VERCEL) {

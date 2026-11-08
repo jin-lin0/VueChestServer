@@ -1,5 +1,5 @@
 const { randomUUID } = require("node:crypto");
-const { CheckinError } = require("../../utils/checkinCredentials");
+const { TaskError } = require("../../utils/taskCredentials");
 
 const BASE = "https://www.workbuddy.cn";
 const REFRESH = "https://copilot.tencent.com/v2/plugin/auth/token/refresh";
@@ -33,9 +33,9 @@ function validateCredentials(input) {
     /\s/.test(accessToken + refreshToken) ||
     !subject(accessToken)
   ) {
-    throw new CheckinError(
+    throw new TaskError(
       "请提供国内版有效格式的 Access Token 和 Refresh Token",
-      "INVALID_CHECKIN_CREDENTIALS",
+      "INVALID_DAILY_CREDENTIALS",
       400,
     );
   }
@@ -79,19 +79,19 @@ async function run({
       });
       payload = await response.json();
     } catch {
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 请求超时或响应不可用，请稍后重试",
         "WORKBUDDY_NETWORK_ERROR",
       );
     }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 响应格式异常",
         "WORKBUDDY_INVALID_RESPONSE",
       );
     }
     if ([11140, "11140"].includes(payload.code)) {
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 账号受限，请在官方客户端确认状态",
         "WORKBUDDY_RESTRICTED",
       );
@@ -101,14 +101,14 @@ async function run({
 
   async function refresh() {
     if (refreshed)
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 登录已失效，请重新录入凭据",
         "WORKBUDDY_AUTH_EXPIRED",
       );
     refreshed = true;
     const { response, payload } = await request(REFRESH, true);
     if (!response.ok || !ok(payload.code) || !payload.data?.accessToken) {
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 令牌续期失败，请重新登录",
         "WORKBUDDY_REFRESH_FAILED",
       );
@@ -118,7 +118,7 @@ async function run({
       refreshToken: payload.data.refreshToken || current.refreshToken,
     });
     if (subject(next.accessToken) !== subject(current.accessToken)) {
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 续期返回了不同账号，已停止",
         "WORKBUDDY_IDENTITY_CHANGED",
       );
@@ -137,14 +137,14 @@ async function run({
     }
     const { response, payload } = result;
     if (!response.ok || !ok(payload.code)) {
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 签到状态查询失败，请确认账号权限和登录状态",
         "WORKBUDDY_STATUS_FAILED",
       );
     }
     const data = payload.data;
     if (!data || typeof data.active !== "boolean") {
-      throw new CheckinError(
+      throw new TaskError(
         "WorkBuddy 签到状态字段不完整",
         "WORKBUDDY_INVALID_STATE",
       );
@@ -159,7 +159,7 @@ async function run({
     return { status: "already_done", summary: "上游确认今日已经签到" };
   }
   if (![false, 0].includes(state.today_checked_in)) {
-    throw new CheckinError("无法确认今日是否已签到", "WORKBUDDY_INVALID_STATE");
+    throw new TaskError("无法确认今日是否已签到", "WORKBUDDY_INVALID_STATE");
   }
   const claim = await request(CLAIM);
   if (claim.response.status === 401 && !refreshed) {
@@ -168,7 +168,7 @@ async function run({
     if (!state.active)
       return { status: "inactive", summary: "签到活动未开放，本次跳过" };
     if (![true, 1, false, 0].includes(state.today_checked_in)) {
-      throw new CheckinError(
+      throw new TaskError(
         "无法确认今日是否已签到",
         "WORKBUDDY_INVALID_STATE",
       );
@@ -177,7 +177,7 @@ async function run({
   }
   state = await status();
   if (![true, 1].includes(state.today_checked_in)) {
-    throw new CheckinError(
+    throw new TaskError(
       "WorkBuddy 尚未确认签到成功，可稍后手动重试",
       "WORKBUDDY_UNCONFIRMED",
     );

@@ -1,7 +1,7 @@
 const crypto = require("node:crypto");
 
-class CheckinError extends Error {
-  constructor(message, code = "CHECKIN_FAILED", status = 502) {
+class TaskError extends Error {
+  constructor(message, code = "DAILY_FAILED", status = 502) {
     super(message);
     this.code = code;
     this.status = status;
@@ -9,11 +9,11 @@ class CheckinError extends Error {
 }
 
 function encryptionKey() {
-  const value = process.env.CHECKIN_ENCRYPTION_KEY;
+  const value = process.env.DAILY_ENCRYPTION_KEY;
   if (typeof value !== "string" || !/^[a-fA-F0-9]{64}$/.test(value)) {
-    throw new CheckinError(
-      "签到加密密钥未配置或格式错误",
-      "CHECKIN_KEY_REQUIRED",
+    throw new TaskError(
+      "任务凭据加密密钥未配置或格式错误",
+      "DAILY_KEY_REQUIRED",
       503,
     );
   }
@@ -56,16 +56,16 @@ function decryptCredentials(value, accountId, provider) {
       ]).toString("utf8"),
     );
   } catch {
-    throw new CheckinError(
-      "签到凭据无法解密，请检查密钥或重新录入",
-      "CHECKIN_DECRYPT_FAILED",
+    throw new TaskError(
+      "任务凭据无法解密，请检查密钥或重新录入",
+      "DAILY_DECRYPT_FAILED",
       503,
     );
   }
 }
 
 module.exports = {
-  CheckinError,
+  TaskError,
   encryptionKey,
   encryptCredentials,
   decryptCredentials,

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const provider = require("../scripts/checkin-credentials/workbuddy-cn");
+const provider = require("../scripts/site-login/workbuddy-cn");
 
 function jwt(claims) {
   return `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;

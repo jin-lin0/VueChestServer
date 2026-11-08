@@ -33,10 +33,10 @@ try {
 }
 if (flow.id !== task) fail(`workers/${task}/flow.js 的 id 与任务名不一致`);
 
-const server = (process.env.CHECKIN_SERVER || "").replace(/\/+$/, "");
+const server = (process.env.DAILY_SERVER || "").replace(/\/+$/, "");
 const secret = process.env.CRON_SECRET || "";
 if (!server || !secret)
-  fail("缺少环境变量：CHECKIN_SERVER、CRON_SECRET");
+  fail("缺少环境变量：DAILY_SERVER、CRON_SECRET");
 
 runTask({
   task,

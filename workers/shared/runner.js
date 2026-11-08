@@ -30,7 +30,7 @@ async function runTask({
   log = (...args) => console.log(...args),
   debugDir = env.WORKER_DEBUG_DIR || "debug",
 }) {
-  const only = env.CHECKIN_OWNER_ID ? Number(env.CHECKIN_OWNER_ID) : 0;
+  const only = env.DAILY_OWNER_ID ? Number(env.DAILY_OWNER_ID) : 0;
   const ownerIds = only ? [only] : await client.ownerIds(task);
   if (!ownerIds.length)
     throw new Error("没有超管配置该站点的凭据，请先在超管后台填写");

@@ -2,10 +2,10 @@
 /**
  * 自动签到凭据录入脚本：本地跑一遍登录，直接得到 AT/RT 并写进数据库。
  *
- *   pnpm checkin                                   # 方向键选站点，回车确认
- *   pnpm checkin workbuddy-cn
- *   pnpm checkin workbuddy-cn --phone 13800000000 --code 123456
- *   pnpm checkin workbuddy-cn --dry-run            # 只打印，不写库
+ *   pnpm login                                   # 方向键选站点，回车确认
+ *   pnpm login workbuddy-cn
+ *   pnpm login workbuddy-cn --phone 13800000000 --code 123456
+ *   pnpm login workbuddy-cn --dry-run            # 只打印，不写库
  *
  * 为什么不放在外部项目：凭据格式、加密密钥、入库方式都在本仓库，
  * 登录脚本放这里才能"跑完即用"，不必手工复制或跨仓库同步。
@@ -16,15 +16,15 @@ const readline = require("node:readline/promises");
 const { stdin, stdout } = require("node:process");
 const sequelize = require("../../config/database");
 const User = require("../../models/user");
-const State = require("../../models/checkinState");
+const State = require("../../models/dailyTaskState");
 const Run = require("../../models/cronRun");
-const { tasks, createCheckinService } = require("../../services/checkins");
+const { tasks, createDailyTaskService } = require("../../services/daily");
 const workbuddy = require("./workbuddy-cn");
 const { selectOption } = require("./prompt-select");
 
 const providers = new Map([[workbuddy.id, workbuddy]]);
 
-const HELP = `用法: pnpm checkin [站点] [站点选项...]
+const HELP = `用法: pnpm login [站点] [站点选项...]
 
 不写站点时进入交互式选择（方向键移动，回车确认）；其余参数原样交给该站点的登录脚本。
 
@@ -128,7 +128,7 @@ async function main() {
       `没有为「${taskId}」提供登录脚本，可选：${[...providers.keys()].join("、")}`,
     );
   if (args.help) {
-    console.log(`用法: pnpm checkin ${provider.usage}\n\n${provider.description}`);
+    console.log(`用法: pnpm login ${provider.usage}\n\n${provider.description}`);
     return;
   }
 
@@ -143,7 +143,7 @@ async function main() {
     prompter.close();
 
     if (!args.dryRun) {
-      const service = createCheckinService({ State, Run });
+      const service = createDailyTaskService({ State, Run });
       await service.configure(ownerId, provider.id, credentials);
     }
 
@@ -155,7 +155,7 @@ async function main() {
     console.log(
       args.dryRun
         ? "ℹ️ dry-run：未写入数据库"
-        : "💾 已加密写入 checkin_states，定时任务会直接使用这份凭据",
+        : "💾 已加密写入 daily_task_states，定时任务会直接使用这份凭据",
     );
     console.log("ℹ️ 令牌每次续期都会轮换，请勿再手工粘贴旧值覆盖");
   } finally {

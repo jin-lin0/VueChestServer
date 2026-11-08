@@ -1,4 +1,4 @@
-const { CheckinError } = require("../../utils/checkinCredentials");
+const { TaskError } = require("../../utils/taskCredentials");
 
 const COOKIE_MAX_LENGTH = 4000;
 
@@ -10,32 +10,32 @@ const COOKIE_MAX_LENGTH = 4000;
 function validateCredentials(input) {
   const raw = typeof input?.cookie === "string" ? input.cookie.trim() : "";
   if (!raw)
-    throw new CheckinError(
+    throw new TaskError(
       "请填写掘金 Cookie（至少包含 sessionid）",
-      "INVALID_CHECKIN_CREDENTIALS",
+      "INVALID_DAILY_CREDENTIALS",
       400,
     );
   if (raw.length > COOKIE_MAX_LENGTH || /[\r\n]/.test(raw))
-    throw new CheckinError(
+    throw new TaskError(
       "掘金 Cookie 格式不正确（过长或包含换行）",
-      "INVALID_CHECKIN_CREDENTIALS",
+      "INVALID_DAILY_CREDENTIALS",
       400,
     );
   // 允许只粘贴 sessionid 的裸值，这里补全成合法 Cookie
   const cookie = raw.includes("=") ? raw : `sessionid=${raw}`;
   if (!/(^|;\s*)sessionid=[^;\s]+/.test(cookie))
-    throw new CheckinError(
+    throw new TaskError(
       "掘金 Cookie 里缺少 sessionid",
-      "INVALID_CHECKIN_CREDENTIALS",
+      "INVALID_DAILY_CREDENTIALS",
       400,
     );
   return { cookie };
 }
 
 async function run() {
-  throw new CheckinError(
+  throw new TaskError(
     "掘金签到需要浏览器环境，请由外部 worker 执行并上报结果",
-    "CHECKIN_REQUIRES_WORKER",
+    "DAILY_REQUIRES_WORKER",
     400,
   );
 }

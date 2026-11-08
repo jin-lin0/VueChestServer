@@ -63,7 +63,7 @@ async function withRouter(run) {
   const runRows = [
     {
       id: 8,
-      job: "checkin-config:workbuddy-cn",
+      job: "daily-config:workbuddy-cn",
       ownerId: 2,
       success: true,
       durationMs: 0,
@@ -72,7 +72,7 @@ async function withRouter(run) {
     },
     {
       id: 7,
-      job: "checkin:workbuddy-cn",
+      job: "daily:workbuddy-cn",
       ownerId: 2,
       success: true,
       durationMs: 100,
@@ -81,7 +81,7 @@ async function withRouter(run) {
     },
     {
       id: 6,
-      job: "checkin:workbuddy-cn",
+      job: "daily:workbuddy-cn",
       ownerId: 1,
       success: false,
       durationMs: 800,
@@ -90,7 +90,7 @@ async function withRouter(run) {
     },
     {
       id: 5,
-      job: "checkin-config:workbuddy-cn",
+      job: "daily-config:workbuddy-cn",
       ownerId: 1,
       success: true,
       durationMs: 0,
@@ -99,7 +99,7 @@ async function withRouter(run) {
     },
     {
       id: 4,
-      job: "checkin:workbuddy-cn",
+      job: "daily:workbuddy-cn",
       ownerId: 1,
       success: false,
       durationMs: 700,
@@ -108,7 +108,7 @@ async function withRouter(run) {
     },
     {
       id: 3,
-      job: "checkin:other-site",
+      job: "daily:other-site",
       ownerId: 1,
       success: true,
       durationMs: 300,
@@ -117,7 +117,7 @@ async function withRouter(run) {
     },
     {
       id: 2,
-      job: "checkin-config:other-site",
+      job: "daily-config:other-site",
       ownerId: 1,
       success: true,
       durationMs: 0,
@@ -126,7 +126,7 @@ async function withRouter(run) {
     },
     {
       id: 1,
-      job: "checkin:workbuddy-cn",
+      job: "daily:workbuddy-cn",
       ownerId: 1,
       success: true,
       durationMs: 500,
@@ -138,6 +138,7 @@ async function withRouter(run) {
   const configurations = [];
   const cleared = [];
   const executed = [];
+  const toggled = [];
 
   const State = {
     async findByPk(id) {
@@ -183,6 +184,10 @@ async function withRouter(run) {
       cleared.push({ ownerId, id });
       return { task: id, ownerId, configured: false };
     },
+    setEnabled: async (ownerId, id, enabled) => {
+      toggled.push({ ownerId, id, enabled });
+      return { task: id, ownerId, enabled };
+    },
     runOne: async (ownerId, id, options) => {
       executed.push({ ownerId, id, options });
       return {
@@ -204,13 +209,13 @@ async function withRouter(run) {
   };
 
   const modules = {
-    "../models/checkinState": State,
+    "../models/dailyTaskState": State,
     "../models/cronRun": Run,
-    "../services/checkins": {
+    "../services/daily": {
       tasks: [task],
       dayKey: () => "2026-11-08",
       accountId: (ownerId, taskId) => `${ownerId}:${taskId}`,
-      createCheckinService: () => service,
+      createDailyTaskService: () => service,
     },
     "../middleware/auth": {
       authMiddleware(req, res, next) {
@@ -235,7 +240,7 @@ async function withRouter(run) {
     },
   };
 
-  const routerPath = require.resolve("../routes/checkins");
+  const routerPath = require.resolve("../routes/daily");
   const previous = new Map([[routerPath, require.cache[routerPath]]]);
   for (const [name, exports] of Object.entries(modules)) {
     const path = require.resolve(name);
@@ -246,7 +251,7 @@ async function withRouter(run) {
 
   const app = express();
   app.use(express.json());
-  app.use("/api/checkins", require(routerPath));
+  app.use("/api/daily", require(routerPath));
   app.use((error, req, res, next) => {
     res.status(error.status || 500).json({
       success: false,
@@ -256,7 +261,7 @@ async function withRouter(run) {
   });
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
-  const base = `http://127.0.0.1:${server.address().port}/api/checkins`;
+  const base = `http://127.0.0.1:${server.address().port}/api/daily`;
   try {
     await run({
       request: (path, options = {}) =>
@@ -271,6 +276,7 @@ async function withRouter(run) {
       configurations,
       cleared,
       executed,
+      toggled,
     });
   } finally {
     server.closeAllConnections();
@@ -316,6 +322,56 @@ test("任务列表只返回状态与字段元数据，不泄露凭据", async ()
   });
 });
 
+test("股票日报作为全局任务出现在每日任务列表和执行日志里", async () => {
+  await withRouter(async ({ request, runRows }) => {
+    runRows.unshift({
+      id: 50,
+      job: "stock-digest",
+      ownerId: null,
+      success: true,
+      durationMs: 1200,
+      detail: "评估 7 批，发送 1 封",
+      createdAt: "2026-11-08T02:30:00.000Z",
+    });
+
+    const body = await (await request("/admin/tasks")).json();
+    const digest = body.data.items.find((item) => item.id === "stock-digest");
+    assert.ok(digest, "全局任务必须出现在任务列表");
+    assert.equal(digest.requiresCredentials, false);
+    assert.equal(digest.executor, "server");
+    assert.equal(digest.todayCompleted, true);
+    assert.equal(digest.lastRun.detail, "评估 7 批，发送 1 封");
+
+    const all = await (await request("/admin/logs")).json();
+    assert.ok(all.data.items.some((row) => row.task === "stock-digest"));
+
+    const filtered = await (await request("/admin/logs?task=stock-digest")).json();
+    assert.equal(filtered.data.total, 1);
+    assert.equal(filtered.data.items[0].detail, "评估 7 批，发送 1 封");
+  });
+});
+
+test("任务开关只接受布尔值，并把状态交给签到服务", async () => {
+  await withRouter(async ({ request, toggled }) => {
+    const bad = await request("/admin/tasks/workbuddy-cn/enabled", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: "yes" }),
+    });
+    assert.equal(bad.status, 400);
+
+    const ok = await request("/admin/tasks/workbuddy-cn/enabled", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(toggled, [
+      { ownerId: 1, id: "workbuddy-cn", enabled: false },
+    ]);
+  });
+});
+
 test("超管保存凭据并写入审计，响应不回显密钥", async () => {
   await withRouter(async ({ request, configurations, runRows }) => {
     const value = { accessToken: "secret-access", refreshToken: "secret-refresh" };
@@ -330,7 +386,7 @@ test("超管保存凭据并写入审计，响应不回显密钥", async () => {
     assert.deepEqual(configurations, [
       { ownerId: 1, id: "workbuddy-cn", value },
     ]);
-    const audit = runRows.find((row) => row.job === "checkin-config:workbuddy-cn");
+    const audit = runRows.find((row) => row.job === "daily-config:workbuddy-cn");
     assert.ok(audit);
     assert.equal(audit.detail, "admin#1 更新凭据");
   });
@@ -343,7 +399,7 @@ test("超管清除凭据并写入审计", async () => {
     assert.deepEqual(cleared, [{ ownerId: 1, id: "workbuddy-cn" }]);
     const audit = runRows.find((row) => row.detail === "admin#1 清除凭据");
     assert.ok(audit);
-    assert.equal(audit.job, "checkin-config:workbuddy-cn");
+    assert.equal(audit.job, "daily-config:workbuddy-cn");
   });
 });
 

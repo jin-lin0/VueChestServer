@@ -1,5 +1,5 @@
 {
-  "name": "vuechest-checkin-workers",
+  "name": "vuechest-daily-workers",
   "private": true,
   "version": "1.0.0",
   "description": "需要真实浏览器的签到任务（Playwright）",

@@ -10,15 +10,15 @@ async function withRouter(run) {
   const reports = [];
   const previous = new Map();
   const modules = {
-    "../models/checkinState": {},
+    "../models/dailyTaskState": {},
     "../models/cronRun": {},
-    "../services/checkins": {
-      createCheckinService: () => ({
+    "../services/daily": {
+      createDailyTaskService: () => ({
         configure: async (ownerId, task, value) => {
           if (!ownerId) {
             const error = new Error("缺少有效的签到归属用户");
             error.status = 400;
-            error.code = "CHECKIN_OWNER_REQUIRED";
+            error.code = "DAILY_OWNER_REQUIRED";
             throw error;
           }
           configurations.push({ ownerId, task, value });
@@ -31,7 +31,7 @@ async function withRouter(run) {
         workerCredentials: async () => {
           const error = new Error("尚未录入该站点的凭据，请先在超管后台配置");
           error.status = 404;
-          error.code = "CHECKIN_UNCONFIGURED";
+          error.code = "DAILY_UNCONFIGURED";
           throw error;
         },
         report: async (ownerId, task, payload) => {
@@ -47,7 +47,7 @@ async function withRouter(run) {
       superAdminOnly: () => assert.fail("个人 Cron 不应依赖管理员角色"),
     },
   };
-  const routerPath = require.resolve("../routes/checkins");
+  const routerPath = require.resolve("../routes/daily");
   previous.set(routerPath, require.cache[routerPath]);
   for (const [name, exports] of Object.entries(modules)) {
     const path = require.resolve(name);
@@ -57,7 +57,7 @@ async function withRouter(run) {
   delete require.cache[routerPath];
   const app = express();
   app.use(express.json());
-  app.use("/api/checkins", require(routerPath));
+  app.use("/api/daily", require(routerPath));
   app.use((error, req, res, next) => {
     res.status(error.status || 500).json({
       success: false,
@@ -74,7 +74,7 @@ async function withRouter(run) {
       reports,
       request: (path, options) =>
         fetch(
-          `http://127.0.0.1:${server.address().port}/api/checkins${path}`,
+          `http://127.0.0.1:${server.address().port}/api/daily${path}`,
           options,
         ),
     });

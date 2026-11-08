@@ -5,9 +5,9 @@ const {
   encryptCredentials,
   decryptCredentials,
   encryptionKey,
-} = require("../utils/checkinCredentials");
-const { createCheckinService, dayKey } = require("../services/checkins");
-const workbuddy = require("../services/checkins/workbuddy");
+} = require("../utils/taskCredentials");
+const { createDailyTaskService, dayKey } = require("../services/daily");
+const workbuddy = require("../services/daily/workbuddy");
 
 const token = (sub = "test-user", nonce = "a") =>
   `e30.${Buffer.from(JSON.stringify({ sub, nonce })).toString("base64url")}.signature`;
@@ -16,11 +16,11 @@ const credentials = {
   refreshToken: "test-refresh-token",
 };
 function key(t) {
-  const previous = process.env.CHECKIN_ENCRYPTION_KEY;
-  process.env.CHECKIN_ENCRYPTION_KEY = "ab".repeat(32);
+  const previous = process.env.DAILY_ENCRYPTION_KEY;
+  process.env.DAILY_ENCRYPTION_KEY = "ab".repeat(32);
   t.after(() => {
-    if (previous === undefined) delete process.env.CHECKIN_ENCRYPTION_KEY;
-    else process.env.CHECKIN_ENCRYPTION_KEY = previous;
+    if (previous === undefined) delete process.env.DAILY_ENCRYPTION_KEY;
+    else process.env.DAILY_ENCRYPTION_KEY = previous;
   });
 }
 function reply(data, code = 0, status = 200) {
@@ -63,15 +63,15 @@ test("凭据加密具有随机性，并绑定账号和服务；错误密钥或�
     () => decryptCredentials(parts.join("."), "id", "provider"),
     /无法解密/,
   );
-  process.env.CHECKIN_ENCRYPTION_KEY = "cd".repeat(32);
+  process.env.DAILY_ENCRYPTION_KEY = "cd".repeat(32);
   assert.throws(() => decryptCredentials(a, "id", "provider"), /无法解密/);
 });
 
 test("缺失和非法加密密钥拒绝保存，不回退为明文", (t) => {
   key(t);
   for (const value of [undefined, "", "short", "zz".repeat(32)]) {
-    if (value === undefined) delete process.env.CHECKIN_ENCRYPTION_KEY;
-    else process.env.CHECKIN_ENCRYPTION_KEY = value;
+    if (value === undefined) delete process.env.DAILY_ENCRYPTION_KEY;
+    else process.env.DAILY_ENCRYPTION_KEY = value;
     assert.throws(encryptionKey, /密钥未配置或格式错误/);
   }
 });
@@ -293,8 +293,9 @@ function fixture(run, count = 1) {
       },
     },
     registry,
+    notify: async () => {},
   };
-  return { rows, logs, deps, service: createCheckinService(deps) };
+  return { rows, logs, deps, service: createDailyTaskService(deps) };
 }
 
 test("同日重复触发与并发实例只允许一次账号任务执行", async (t) => {
@@ -307,7 +308,7 @@ test("同日重复触发与并发实例只允许一次账号任务执行", async
   });
   await Promise.all([
     f.service.runAll(),
-    createCheckinService(f.deps).runAll(),
+    createDailyTaskService(f.deps).runAll(),
   ]);
   await f.service.runAll();
   assert.equal(count, 1);
@@ -357,7 +358,7 @@ test("超时释放租约，迟到的凭据回写被拒绝", async (t) => {
     return new Promise(() => {});
   });
   const before = f.rows[0].credentials;
-  const result = await createCheckinService({ ...f.deps, taskMs: 15 }).runAll();
+  const result = await createDailyTaskService({ ...f.deps, taskMs: 15 }).runAll();
   assert.equal(result.results[0].status, "failed");
   assert.equal(f.rows[0].leaseToken, null);
   await assert.rejects(() =>
@@ -369,7 +370,7 @@ test("超时释放租约，迟到的凭据回写被拒绝", async (t) => {
 test("时间不足显式标记未执行任务，不能返回全部成功", async (t) => {
   key(t);
   const f = fixture(() => assert.fail("not enough time"));
-  const result = await createCheckinService({
+  const result = await createDailyTaskService({
     ...f.deps,
     budgetMs: 100,
   }).runAll();
@@ -379,11 +380,11 @@ test("时间不足显式标记未执行任务，不能返回全部成功", async
 
 test("环境变量可覆盖默认时间预算", async (t) => {
   key(t);
-  const previous = process.env.CHECKIN_BUDGET_MS;
-  process.env.CHECKIN_BUDGET_MS = "100";
+  const previous = process.env.DAILY_BUDGET_MS;
+  process.env.DAILY_BUDGET_MS = "100";
   t.after(() => {
-    if (previous === undefined) delete process.env.CHECKIN_BUDGET_MS;
-    else process.env.CHECKIN_BUDGET_MS = previous;
+    if (previous === undefined) delete process.env.DAILY_BUDGET_MS;
+    else process.env.DAILY_BUDGET_MS = previous;
   });
   const f = fixture(() => assert.fail("not enough time"));
   const result = await f.service.runAll();
@@ -457,7 +458,7 @@ test("第二天直接读取数据库中轮换后的令牌", async (t) => {
     return { status: "success", summary: "完成" };
   });
   let date = Date.parse("2026-11-03T01:00:00Z");
-  const service = createCheckinService({ ...f.deps, now: () => date });
+  const service = createDailyTaskService({ ...f.deps, now: () => date });
   await service.runAll();
   date += 86400000;
   await service.runAll();
@@ -484,7 +485,7 @@ test("重新录入凭据后，当日也可重新核对上游", async (t) => {
 test("未录入凭据的个人任务直接跳过，不要求加密密钥", async (t) => {
   key(t);
   const f = fixture(() => assert.fail("not configured"));
-  delete process.env.CHECKIN_ENCRYPTION_KEY;
+  delete process.env.DAILY_ENCRYPTION_KEY;
   f.rows.splice(0);
   f.deps.State.findOrCreate = () => assert.fail("must not access storage");
   const result = await f.service.runAll();
@@ -537,7 +538,7 @@ test("加密密钥缺失时不写入凭据，不生成明文记录", async (t) =
   key(t);
   const f = fixture(() => assert.fail());
   f.rows.splice(0);
-  delete process.env.CHECKIN_ENCRYPTION_KEY;
+  delete process.env.DAILY_ENCRYPTION_KEY;
   await assert.rejects(
     () => f.service.configure(1, "0", credentials),
     /密钥未配置/,
@@ -590,7 +591,7 @@ test("清除凭据删除配置记录；执行中拒绝清除；未知任务报 4
   f.rows[0].leaseUntil = new Date(Date.now() + 90000);
   await assert.rejects(
     () => f.service.clear(1, "0"),
-    (error) => error.status === 409 && error.code === "CHECKIN_BUSY",
+    (error) => error.status === 409 && error.code === "DAILY_BUSY",
   );
   assert.equal(f.rows.length, 1);
 

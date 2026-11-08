@@ -26,20 +26,20 @@ cd VueChestServer/workers
 npm install
 npx playwright install chromium
 
-CHECKIN_SERVER=http://localhost:3000 CRON_SECRET=你的密钥 npm start
+DAILY_SERVER=http://localhost:3000 CRON_SECRET=你的密钥 npm start
 # 等价于 node run.js juejin
 ```
 
 凭据不放在这里：worker 会用 `CRON_SECRET` 取「已配置该站点的超管列表」，再逐个取
-加密库里的 Cookie。所以先在超管后台 `/admin/checkins` 填好即可。
+加密库里的 Cookie。所以先在超管后台 `/admin/daily` 填好即可。
 
 ## 环境变量
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `CHECKIN_SERVER` | ✅ | 服务器地址，如 `https://xxx.vercel.app` |
+| `DAILY_SERVER` | ✅ | 服务器地址，如 `https://xxx.vercel.app` |
 | `CRON_SECRET` | ✅ | 与服务器一致的机器密钥 |
-| `CHECKIN_OWNER_ID` | | 只跑单个超管时用；不填则跑全部已配置的超管 |
+| `DAILY_OWNER_ID` | | 只跑单个超管时用；不填则跑全部已配置的超管 |
 | `WORKER_DEBUG_DIR` | | 失败截图目录，默认 `debug` |
 | `JUEJIN_USER_AGENT` | | 掘金专用，风控严格时替换 UA |
 
@@ -47,7 +47,7 @@ CHECKIN_SERVER=http://localhost:3000 CRON_SECRET=你的密钥 npm start
 
 以假想的 `example` 为例，三处改动：
 
-1. **服务端适配器** `services/checkins/example.js`
+1. **服务端适配器** `services/daily/example.js`
 
    ```js
    module.exports = {
@@ -64,7 +64,7 @@ CHECKIN_SERVER=http://localhost:3000 CRON_SECRET=你的密钥 npm start
    };
    ```
 
-2. **注册任务**：`services/checkins/index.js` 的 `tasks` 数组里加上它。
+2. **注册任务**：`services/daily/index.js` 的 `tasks` 数组里加上它。
    服务器会自动跳过 `executor: "worker"` 的任务，后台也不再显示「立即执行」。
 
 3. **站点流程** `workers/example/flow.js`

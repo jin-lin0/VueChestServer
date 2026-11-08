@@ -25,7 +25,7 @@
       "schedule": "30 0 * * 1-5"
     },
     {
-      "path": "/api/checkins/run",
+      "path": "/api/daily/run",
       "schedule": "17 1 * * *"
     }
   ]

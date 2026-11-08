@@ -6,7 +6,7 @@ function createClient({ server, secret, fetchImpl = fetch, timeoutMs = 15000 }) 
   const base = String(server || "").replace(/\/+$/, "");
 
   async function call(pathname, options = {}) {
-    const response = await fetchImpl(`${base}/api/checkins${pathname}`, {
+    const response = await fetchImpl(`${base}/api/daily${pathname}`, {
       ...options,
       headers: {
         Authorization: `Bearer ${secret}`,

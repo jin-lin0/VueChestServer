@@ -1,13 +1,14 @@
 const { randomUUID } = require("node:crypto");
 const { Op } = require("sequelize");
 const {
-  CheckinError,
+  TaskError,
   encryptCredentials,
   decryptCredentials,
-} = require("../../utils/checkinCredentials");
+} = require("../../utils/taskCredentials");
 const { positiveInt } = require("../westock/limiter");
 const workbuddy = require("./workbuddy");
 const juejin = require("./juejin");
+const { notifyTaskFailure } = require("./notify");
 
 const tasks = [workbuddy, juejin];
 
@@ -28,7 +29,7 @@ function dayKey(now, timeZone) {
   }).format(new Date(now));
 }
 function safeSummary(error) {
-  return error instanceof CheckinError
+  return error instanceof TaskError
     ? error.message
     : "签到执行失败，请检查数据库或上游服务后重试";
 }
@@ -37,12 +38,18 @@ function accountId(ownerId, taskId) {
   return `${ownerId}:${taskId}`;
 }
 
+function enabledOwners(rows) {
+  return rows
+    .filter((row) => row.enabled !== false)
+    .map((row) => row.ownerId);
+}
+
 function requireOwnerId(ownerId) {
   const id = Number(ownerId);
   if (!Number.isInteger(id) || id < 1)
-    throw new CheckinError(
+    throw new TaskError(
       "缺少有效的签到归属用户",
-      "CHECKIN_OWNER_REQUIRED",
+      "DAILY_OWNER_REQUIRED",
       400,
     );
   return id;
@@ -61,27 +68,28 @@ async function resolveWorkerOwner(State, ownerId, taskId) {
     order: [["ownerId", "ASC"]],
   });
   if (rows.length === 0)
-    throw new CheckinError(
+    throw new TaskError(
       "尚未录入该站点的凭据，请先在超管后台配置",
-      "CHECKIN_UNCONFIGURED",
+      "DAILY_UNCONFIGURED",
       404,
     );
   if (rows.length > 1)
-    throw new CheckinError(
+    throw new TaskError(
       `有 ${rows.length} 个超管配置了该站点，请显式指定 ownerId`,
-      "CHECKIN_OWNER_REQUIRED",
+      "DAILY_OWNER_REQUIRED",
       400,
     );
   return rows[0].ownerId;
 }
 
-function createCheckinService({
+function createDailyTaskService({
   State,
   Run,
   registry = tasks,
   now = Date.now,
-  budgetMs = positiveInt(process.env.CHECKIN_BUDGET_MS, DEFAULT_BUDGET_MS),
-  taskMs = positiveInt(process.env.CHECKIN_TASK_TIMEOUT_MS, DEFAULT_TASK_MS),
+  budgetMs = positiveInt(process.env.DAILY_BUDGET_MS, DEFAULT_BUDGET_MS),
+  taskMs = positiveInt(process.env.DAILY_TASK_TIMEOUT_MS, DEFAULT_TASK_MS),
+  notify = notifyTaskFailure,
 }) {
   async function execute(task, ownerId, deadline, { force = false } = {}) {
     const owner = requireOwnerId(ownerId);
@@ -140,13 +148,13 @@ function createCheckinService({
         latest.leaseToken !== leaseToken ||
         new Date(latest.leaseUntil).getTime() <= now()
       ) {
-        throw new CheckinError(
+        throw new TaskError(
           "签到任务锁已失效，已停止执行",
-          "CHECKIN_LEASE_LOST",
+          "DAILY_LEASE_LOST",
         );
       }
       if (now() >= deadline)
-        throw new CheckinError("本轮时间已耗尽，请稍后重试", "CHECKIN_TIMEOUT");
+        throw new TaskError("本轮时间已耗尽，请稍后重试", "DAILY_TIMEOUT");
       const credentials = decryptCredentials(
         latest.credentials,
         id,
@@ -157,7 +165,7 @@ function createCheckinService({
           () => {
             controller.abort();
             reject(
-              new CheckinError("签到执行超时，可稍后重试", "CHECKIN_TIMEOUT"),
+              new TaskError("签到执行超时，可稍后重试", "DAILY_TIMEOUT"),
             );
           },
           Math.max(1, Math.min(taskMs, deadline - now())),
@@ -179,9 +187,9 @@ function createCheckinService({
               { where: owned },
             );
             if (!saved)
-              throw new CheckinError(
+              throw new TaskError(
                 "签到任务锁已失效，停止更新凭据",
-                "CHECKIN_LEASE_LOST",
+                "DAILY_LEASE_LOST",
               );
             controller.signal.throwIfAborted();
           },
@@ -220,7 +228,7 @@ function createCheckinService({
     let recorded = true;
     try {
       await Run.create({
-        job: `checkin:${task.id}`,
+        job: `daily:${task.id}`,
         ownerId: owner,
         success: result.status !== "failed",
         durationMs: now() - started,
@@ -229,13 +237,15 @@ function createCheckinService({
     } catch {
       recorded = false;
     }
+    if (result.status === "failed")
+      await notify({ ownerId: owner, task, summary: result.summary });
     return { task: task.id, ownerId: owner, ...result, recorded };
   }
 
   function findTask(taskId) {
     const task = registry.find((item) => item.id === taskId);
     if (!task)
-      throw new CheckinError("未注册的签到服务", "UNKNOWN_CHECKIN_TASK", 400);
+      throw new TaskError("未注册的签到服务", "UNKNOWN_DAILY_TASK", 400);
     return task;
   }
 
@@ -271,9 +281,9 @@ function createCheckinService({
         },
       );
       if (!updated)
-        throw new CheckinError(
+        throw new TaskError(
           "任务正在执行，请稍后更新凭据",
-          "CHECKIN_BUSY",
+          "DAILY_BUSY",
           409,
         );
     }
@@ -301,7 +311,33 @@ function createCheckinService({
     const existing = await State.findByPk(id, { attributes: ["id"] });
     if (!existing)
       return { task: task.id, ownerId: owner, configured: false };
-    throw new CheckinError("任务正在执行，请稍后清除凭据", "CHECKIN_BUSY", 409);
+    throw new TaskError("任务正在执行，请稍后清除凭据", "DAILY_BUSY", 409);
+  }
+
+  /**
+   * 暂停/恢复只影响定时轮次和 worker 账号列表，不动凭据。
+   * 手动执行仍然放行，方便排查「关了之后是不是站点本身的问题」。
+   */
+  async function setEnabled(ownerId, taskId, enabled) {
+    const owner = requireOwnerId(ownerId);
+    const task = findTask(taskId);
+    if (task.requiresCredentials === false)
+      throw new TaskError(
+        "全局任务的开关不经过签到服务",
+        "DAILY_NOT_DAILY_TASK",
+        400,
+      );
+    const id = accountId(owner, task.id);
+    const row = await State.findByPk(id, { attributes: ["id"] });
+    if (!row)
+      throw new TaskError(
+        "该任务尚未配置凭据，无法启用",
+        "DAILY_UNCONFIGURED",
+        400,
+      );
+    const on = enabled === true;
+    await State.update({ enabled: on }, { where: { id } });
+    return { task: task.id, ownerId: owner, enabled: on };
   }
 
   /**
@@ -311,17 +347,17 @@ function createCheckinService({
   async function workerCredentials(ownerId, taskId) {
     const task = findTask(taskId);
     if (task.executor !== "worker")
-      throw new CheckinError(
+      throw new TaskError(
         "该任务由服务器执行，不向 worker 提供凭据",
-        "CHECKIN_NOT_WORKER_TASK",
+        "DAILY_NOT_WORKER_TASK",
         400,
       );
     const owner = await resolveWorkerOwner(State, ownerId, task.id);
     const row = await State.findByPk(accountId(owner, task.id));
     if (!row)
-      throw new CheckinError(
+      throw new TaskError(
         "尚未录入该站点的凭据，请先在超管后台配置",
-        "CHECKIN_UNCONFIGURED",
+        "DAILY_UNCONFIGURED",
         404,
       );
     return {
@@ -338,17 +374,20 @@ function createCheckinService({
   async function workerAccounts(taskId) {
     const task = findTask(taskId);
     if (task.executor !== "worker")
-      throw new CheckinError(
+      throw new TaskError(
         "该任务由服务器执行，没有 worker 账号列表",
-        "CHECKIN_NOT_WORKER_TASK",
+        "DAILY_NOT_WORKER_TASK",
         400,
       );
     const rows = await State.findAll({
       where: { taskId: task.id },
-      attributes: ["ownerId"],
+      attributes: ["ownerId", "enabled"],
       order: [["ownerId", "ASC"]],
     });
-    return { task: task.id, ownerIds: rows.map((row) => row.ownerId) };
+    return {
+      task: task.id,
+      ownerIds: enabledOwners(rows),
+    };
   }
 
   /**
@@ -358,16 +397,16 @@ function createCheckinService({
   async function report(ownerId, taskId, { status, summary, durationMs } = {}) {
     const task = findTask(taskId);
     if (task.executor !== "worker")
-      throw new CheckinError(
+      throw new TaskError(
         "该任务由服务器执行，不接受外部上报",
-        "CHECKIN_NOT_WORKER_TASK",
+        "DAILY_NOT_WORKER_TASK",
         400,
       );
     const normalized = typeof status === "string" ? status.trim() : "";
     if (!WORKER_STATUSES.has(normalized))
-      throw new CheckinError(
+      throw new TaskError(
         "上报状态不合法，只能是 success / already_done / skipped / failed",
-        "INVALID_CHECKIN_STATUS",
+        "INVALID_DAILY_STATUS",
         400,
       );
     const owner = await resolveWorkerOwner(State, ownerId, task.id);
@@ -385,13 +424,14 @@ function createCheckinService({
       );
     }
     await Run.create({
-      job: `checkin:${task.id}`,
+      job: `daily:${task.id}`,
       ownerId: owner,
       success,
       // cron_runs.durationMs 非空；worker 没上报耗时就记 0
       durationMs: duration ?? 0,
       detail: `${normalized}: ${text || "无摘要"}`,
     });
+    if (!success) await notify({ ownerId: owner, task, summary: text || normalized });
     return { task: task.id, ownerId: owner, status: normalized, recorded: true };
   }
 
@@ -403,9 +443,9 @@ function createCheckinService({
     const owner = requireOwnerId(ownerId);
     const task = findTask(taskId);
     if (task.executor === "worker")
-      throw new CheckinError(
+      throw new TaskError(
         "该任务由外部 worker 执行，服务器无法直接运行",
-        "CHECKIN_REQUIRES_WORKER",
+        "DAILY_REQUIRES_WORKER",
         400,
       );
     const deadline = now() + budgetMs;
@@ -420,6 +460,7 @@ function createCheckinService({
         summary: safeSummary(error),
         recorded: false,
       };
+      await notify({ ownerId: owner, task, summary: result.summary });
     }
     return {
       success:
@@ -438,13 +479,13 @@ function createCheckinService({
       if (task.executor === "worker") continue;
       const rows = await State.findAll({
         where: { taskId: task.id },
-        attributes: ["ownerId"],
+        attributes: ["ownerId", "enabled"],
         order: [["ownerId", "ASC"]],
       });
       if (rows.length === 0) slots.push({ task, ownerId: null });
       else
-        for (const row of rows)
-          slots.push({ task, ownerId: row.ownerId });
+        for (const ownerId of enabledOwners(rows))
+          slots.push({ task, ownerId });
     }
     const results = new Array(slots.length);
     let cursor = 0;
@@ -478,6 +519,11 @@ function createCheckinService({
             status: "failed",
             summary: safeSummary(error),
           };
+          await notify({
+            ownerId: slot.ownerId,
+            task: slot.task,
+            summary: results[i].summary,
+          });
         }
       }
     }
@@ -495,10 +541,11 @@ function createCheckinService({
     runOne,
     configure,
     clear,
+    setEnabled,
     workerCredentials,
     workerAccounts,
     report,
   };
 }
 
-module.exports = { tasks, dayKey, accountId, createCheckinService };
+module.exports = { tasks, dayKey, accountId, createDailyTaskService };

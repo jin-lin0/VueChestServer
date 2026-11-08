@@ -1,4 +1,4 @@
-/** 终端交互选择：方向键移动、回车确认。没有第三方依赖，只用 ANSI 控制符重绘。 */
+/** 终端交互选择：方向键移动、回车确认。无第三方依赖，只用 ANSI 控制符重绘。 */
 const readline = require("node:readline");
 
 const CLEAR_LINE = "\x1b[2K";
