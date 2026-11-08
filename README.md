@@ -206,6 +206,8 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 | `GET /api/checkins/run` | Vercel 每日触发 |
 | `POST /api/checkins/run` | 手动补跑 |
 | `PUT /api/checkins/credentials/:task` | 机器写入凭据，只写不读；body 需带 `ownerId` |
+| `GET /api/checkins/credentials/:task` | 仅 worker 执行型任务可读，供外部 worker 取凭据 |
+| `POST /api/checkins/report` | 外部 worker 上报执行结果 |
 
 部署前确保 `checkin_states` 和 `cron_runs` 已存在；表结构由模型定义，`pnpm schema:check` 可检查结构差异。Vercel 运行时不会自动建表。全新环境直接启动一次服务即可建表；本项目不保留旧结构兼容，旧库升级直接删除 `checkin_states` 重建并重新录入凭据。
 
@@ -225,7 +227,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 }
 ```
 
-也可以在环境变量 `CHECKIN_OWNER_ID` 中指定默认归属，省去每次传 `ownerId`。录入不执行签到，也不返回凭据；录入后调用 POST 执行入口验证。刷新后的令牌自动加密写回，重新登录后仍通过同一 PUT 接口替换。任务执行中拒绝覆盖（409）。加密密钥丢失或更换后，需要迁移密文或重新录入凭据。
+机器入口必须显式传 `ownerId`，不再读取环境变量兜底。录入不执行签到，也不返回凭据；录入后调用 POST 执行入口验证。刷新后的令牌自动加密写回，重新登录后仍通过同一 PUT 接口替换。任务执行中拒绝覆盖（409）。加密密钥丢失或更换后，需要迁移密文或重新录入凭据。
 
 ### 凭据从哪来
 
@@ -248,7 +250,22 @@ pnpm checkin workbuddy-cn --dry-run       # 只打印凭据，不改数据库
 
 结果在 `results` 中，并带 `ownerId` 区分归属：`success` / `already_done` 表示上游确认已签；`unconfigured` 表示未录入；`inactive` 表示活动未开放；`failed` / `deferred` 表示失败或预算不足。部分失败时返回 502，其他任务继续执行；Vercel 不会自动重试失败的 Cron。脱敏执行摘要存入 `cron_runs`。
 
-当前只接入 WorkBuddy 国内版签到，不包含活跃模拟、对话或其他成长任务。新增站点时实现凭据校验与签到适配器，并加入任务清单，无需用户管理模块。
+当前接入 WorkBuddy 国内版（服务器直连）与掘金（worker 执行）。WorkBuddy 不包含活跃模拟、对话或其他成长任务；新增站点时实现凭据校验与签到适配器并加入任务清单即可。
+
+### 掘金（worker 执行）
+
+掘金的 `growth_api` 要求浏览器生成的签名参数（`a_bogus` / `msToken`），服务端 `fetch`
+只会拿到 HTTP 200 + 空 body，所以该任务标记为 `executor: "worker"`：
+
+- 服务器不执行它（`runAll` 跳过、后台没有「立即执行」按钮），只存凭据、收结果、写日志；
+- 真正的签到与免费抽奖在 [`workers/`](workers/README.md) 里用 Chromium 完成，
+  由 [`.github/workflows/juejin-checkin.yml`](.github/workflows/juejin-checkin.yml) 每天 UTC 22:00 触发。
+
+配置步骤：超管后台 `/admin/checkins` 填掘金 Cookie（只填 `sessionid` 的值也可以，会自动补全）；
+GitHub 仓库里配 Variable `CHECKIN_SERVER` 和 Secret `CRON_SECRET`，
+然后在 Actions 里手动跑一次 `workflow_dispatch` 验证。
+归属超管不用写进 CI：worker 先取"已配置掘金的超管列表"，再逐个执行，一次运行覆盖所有超管。
+只有想单独跑某一个超管时才需要 `CHECKIN_OWNER_ID`。
 
 ### 超管后台
 

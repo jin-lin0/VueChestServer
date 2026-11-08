@@ -10,3 +10,6 @@ package-lock.json
 _tmp_*
 
 .workbuddy-ai
+
+# worker 失败截图只作为 Actions artifact 上传，不入库
+workers/debug/

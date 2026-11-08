@@ -7,6 +7,7 @@ async function withRouter(run) {
   process.env.CRON_SECRET = "test-cron-secret";
   let executions = 0;
   const configurations = [];
+  const reports = [];
   const previous = new Map();
   const modules = {
     "../models/checkinState": {},
@@ -26,6 +27,16 @@ async function withRouter(run) {
         runAll: async () => {
           executions++;
           return { success: true, results: [] };
+        },
+        workerCredentials: async () => {
+          const error = new Error("尚未录入该站点的凭据，请先在超管后台配置");
+          error.status = 404;
+          error.code = "CHECKIN_UNCONFIGURED";
+          throw error;
+        },
+        report: async (ownerId, task, payload) => {
+          reports.push({ ownerId, task, ...payload });
+          return { task, ownerId, status: payload.status, recorded: true };
         },
       }),
     },
@@ -60,6 +71,7 @@ async function withRouter(run) {
     await run({
       executions: () => executions,
       configurations,
+      reports,
       request: (path, options) =>
         fetch(
           `http://127.0.0.1:${server.address().port}/api/checkins${path}`,
@@ -162,7 +174,7 @@ test("不再暴露账号管理、服务列表或执行记录查询接口", async
     }
   }));
 
-test("凭据录入仅需 Cron 密钥，拒绝网站管理员令牌且不提供读取接口", async () =>
+test("凭据录入仅需 Cron 密钥，拒绝网站管理员令牌，读取只对 worker 任务开放", async () =>
   withRouter(async ({ request, configurations }) => {
     const value = {
       accessToken: "access-example",
@@ -214,4 +226,40 @@ test("凭据录入仅需 Cron 密钥，拒绝网站管理员令牌且不提供�
       ).status,
       404,
     );
+  }));
+
+test("worker 结果上报需要 Cron 密钥，并原样交给服务层", async () =>
+  withRouter(async ({ request, reports }) => {
+    const body = JSON.stringify({
+      ownerId: 2,
+      task: "juejin",
+      status: "success",
+      summary: "签到成功，+5 矿石",
+      durationMs: 12345,
+    });
+    const headers = { "Content-Type": "application/json" };
+
+    assert.equal(
+      (await request("/report", { method: "POST", headers, body })).status,
+      401,
+    );
+    assert.equal(reports.length, 0);
+
+    const response = await request("/report", {
+      method: "POST",
+      headers: { ...headers, Authorization: "Bearer test-cron-secret" },
+      body,
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.data.task, "juejin");
+    assert.deepEqual(reports, [
+      {
+        ownerId: 2,
+        task: "juejin",
+        status: "success",
+        summary: "签到成功，+5 矿石",
+        durationMs: 12345,
+      },
+    ]);
   }));

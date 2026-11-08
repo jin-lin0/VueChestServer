@@ -24,14 +24,39 @@ async function run(req, res) {
 // 个人运维入口：定时触发和手动补跑都只使用 Cron 密钥。
 router.route("/run").get(cronAuth, run).post(cronAuth, run);
 
-// 仅写入，不提供凭据读取接口；与定时入口使用同一运维密钥。
-// 多超管模式下必须用 ownerId（body 或 CHECKIN_OWNER_ID）指明凭据归属，
+// 机器写入凭据；与定时入口使用同一运维密钥。读取只开放给 worker 任务，见下方 GET。
+// 多超管模式下必须用 ownerId 指明凭据归属，
 // 日常使用请优先走下面的超管后台接口。
 router.put("/credentials/:task", cronAuth, async (req, res) => {
-  const ownerId = req.body?.ownerId ?? process.env.CHECKIN_OWNER_ID;
+  const ownerId = req.body?.ownerId;
   const value = { ...(req.body || {}) };
   delete value.ownerId;
   const data = await service.configure(ownerId, req.params.task, value);
+  res.json({ success: true, data });
+});
+
+// worker 专用：读取「worker 执行型」任务的凭据（目前只有需要浏览器签名的掘金）。
+// 服务器自执行的任务永远不经过这个接口，避免一对 Cron 密钥就能拖走所有令牌。
+router.get("/credentials/:task", cronAuth, async (req, res) => {
+  const ownerId = req.query.ownerId;
+  const data = await service.workerCredentials(ownerId, req.params.task);
+  res.json({ success: true, data });
+});
+
+// 一次 worker 运行覆盖所有已配置的超管：先取账号列表，再逐个跑。
+router.get("/workers/:task/owners", cronAuth, async (req, res) => {
+  const data = await service.workerAccounts(req.params.task);
+  res.json({ success: true, data });
+});
+
+// worker 结果上报：只写 cron_runs，成功时更新当日完成状态。
+router.post("/report", cronAuth, async (req, res) => {
+  const ownerId = req.body?.ownerId;
+  const data = await service.report(ownerId, req.body?.task, {
+    status: req.body?.status,
+    summary: req.body?.summary,
+    durationMs: req.body?.durationMs,
+  });
   res.json({ success: true, data });
 });
 
@@ -53,6 +78,7 @@ function taskMeta(task) {
     name: task.name,
     description: task.description || "",
     timeZone: task.timeZone,
+    executor: task.executor === "worker" ? "worker" : "server",
     credentialFields: Array.isArray(task.credentialFields)
       ? task.credentialFields.map((field) => ({ ...field }))
       : [],

@@ -7,13 +7,17 @@ const {
 } = require("../../utils/checkinCredentials");
 const { positiveInt } = require("../westock/limiter");
 const workbuddy = require("./workbuddy");
+const juejin = require("./juejin");
 
-const tasks = [workbuddy];
+const tasks = [workbuddy, juejin];
 
 // 开启 Fluid Compute 后 Hobby 的默认与上限均为 300s（vercel.json maxDuration），
 // 预算给冷启动、数据库连接和响应留出余量。预算只是上限，不预占时长。
 const DEFAULT_BUDGET_MS = 240000;
 const DEFAULT_TASK_MS = 60000;
+
+// worker 任务只接受外部上报，服务器不直接执行，也不参与定时轮次。
+const WORKER_STATUSES = new Set(["success", "already_done", "skipped", "failed"]);
 
 function dayKey(now, timeZone) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -42,6 +46,33 @@ function requireOwnerId(ownerId) {
       400,
     );
   return id;
+}
+
+/**
+ * worker 只关心"该站点是谁的凭据"，不该在 CI 里硬编码超管 ID。
+ * 只有一个超管配置了该站点时自动归属；多个时才要求显式指定，避免写错账号。
+ */
+async function resolveWorkerOwner(State, ownerId, taskId) {
+  if (ownerId !== undefined && ownerId !== null && ownerId !== "")
+    return requireOwnerId(ownerId);
+  const rows = await State.findAll({
+    where: { taskId },
+    attributes: ["ownerId"],
+    order: [["ownerId", "ASC"]],
+  });
+  if (rows.length === 0)
+    throw new CheckinError(
+      "尚未录入该站点的凭据，请先在超管后台配置",
+      "CHECKIN_UNCONFIGURED",
+      404,
+    );
+  if (rows.length > 1)
+    throw new CheckinError(
+      `有 ${rows.length} 个超管配置了该站点，请显式指定 ownerId`,
+      "CHECKIN_OWNER_REQUIRED",
+      400,
+    );
+  return rows[0].ownerId;
 }
 
 function createCheckinService({
@@ -274,12 +305,109 @@ function createCheckinService({
   }
 
   /**
+   * 只对 worker 任务开放：worker 需要用同一份加密凭据执行浏览器流程。
+   * 服务器自执行的任务（如 WorkBuddy 的 AT/RT）永远不能通过这里读出。
+   */
+  async function workerCredentials(ownerId, taskId) {
+    const task = findTask(taskId);
+    if (task.executor !== "worker")
+      throw new CheckinError(
+        "该任务由服务器执行，不向 worker 提供凭据",
+        "CHECKIN_NOT_WORKER_TASK",
+        400,
+      );
+    const owner = await resolveWorkerOwner(State, ownerId, task.id);
+    const row = await State.findByPk(accountId(owner, task.id));
+    if (!row)
+      throw new CheckinError(
+        "尚未录入该站点的凭据，请先在超管后台配置",
+        "CHECKIN_UNCONFIGURED",
+        404,
+      );
+    return {
+      task: task.id,
+      ownerId: owner,
+      credentials: decryptCredentials(row.credentials, row.id, task.id),
+    };
+  }
+
+  /**
+   * 列出某个 worker 任务下所有已配置凭据的归属，让一次 worker 运行
+   * 就能覆盖全部超管，新增超管时不用改 workflow。
+   */
+  async function workerAccounts(taskId) {
+    const task = findTask(taskId);
+    if (task.executor !== "worker")
+      throw new CheckinError(
+        "该任务由服务器执行，没有 worker 账号列表",
+        "CHECKIN_NOT_WORKER_TASK",
+        400,
+      );
+    const rows = await State.findAll({
+      where: { taskId: task.id },
+      attributes: ["ownerId"],
+      order: [["ownerId", "ASC"]],
+    });
+    return { task: task.id, ownerIds: rows.map((row) => row.ownerId) };
+  }
+
+  /**
+   * 外部 worker 的结果上报：只落 cron_runs，成功时标记当日已完成，
+   * 避免超管后台把它显示成"待执行"。
+   */
+  async function report(ownerId, taskId, { status, summary, durationMs } = {}) {
+    const task = findTask(taskId);
+    if (task.executor !== "worker")
+      throw new CheckinError(
+        "该任务由服务器执行，不接受外部上报",
+        "CHECKIN_NOT_WORKER_TASK",
+        400,
+      );
+    const normalized = typeof status === "string" ? status.trim() : "";
+    if (!WORKER_STATUSES.has(normalized))
+      throw new CheckinError(
+        "上报状态不合法，只能是 success / already_done / skipped / failed",
+        "INVALID_CHECKIN_STATUS",
+        400,
+      );
+    const owner = await resolveWorkerOwner(State, ownerId, task.id);
+    const text =
+      typeof summary === "string" ? summary.trim().slice(0, 500) : "";
+    const duration =
+      Number.isInteger(durationMs) && durationMs >= 0
+        ? Math.min(durationMs, 3600000)
+        : null;
+    const success = normalized !== "failed";
+    if (success) {
+      await State.update(
+        { lastCompletedDate: dayKey(now(), task.timeZone) },
+        { where: { id: accountId(owner, task.id) } },
+      );
+    }
+    await Run.create({
+      job: `checkin:${task.id}`,
+      ownerId: owner,
+      success,
+      // cron_runs.durationMs 非空；worker 没上报耗时就记 0
+      durationMs: duration ?? 0,
+      detail: `${normalized}: ${text || "无摘要"}`,
+    });
+    return { task: task.id, ownerId: owner, status: normalized, recorded: true };
+  }
+
+  /**
    * 超管后台的「立即执行」：只跑一个任务，返回与 runAll 同形结果。
    * force=true 时忽略当日幂等，用于换号或联调后的主动复核。
    */
   async function runOne(ownerId, taskId, { force = false } = {}) {
     const owner = requireOwnerId(ownerId);
     const task = findTask(taskId);
+    if (task.executor === "worker")
+      throw new CheckinError(
+        "该任务由外部 worker 执行，服务器无法直接运行",
+        "CHECKIN_REQUIRES_WORKER",
+        400,
+      );
     const deadline = now() + budgetMs;
     let result;
     try {
@@ -307,6 +435,7 @@ function createCheckinService({
     // unconfigured 结果，便于从 cron_runs/响应中看出「没配」而非「漏跑」。
     const slots = [];
     for (const task of registry) {
+      if (task.executor === "worker") continue;
       const rows = await State.findAll({
         where: { taskId: task.id },
         attributes: ["ownerId"],
@@ -361,7 +490,15 @@ function createCheckinService({
       results,
     };
   }
-  return { runAll, runOne, configure, clear };
+  return {
+    runAll,
+    runOne,
+    configure,
+    clear,
+    workerCredentials,
+    workerAccounts,
+    report,
+  };
 }
 
 module.exports = { tasks, dayKey, accountId, createCheckinService };

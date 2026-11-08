@@ -1,0 +1,12 @@
+{
+  "name": "vuechest-checkin-workers",
+  "private": true,
+  "version": "1.0.0",
+  "description": "需要真实浏览器的签到任务（Playwright）",
+  "scripts": {
+    "start": "node run.js juejin"
+  },
+  "dependencies": {
+    "playwright": "^1.65.0"
+  }
+}

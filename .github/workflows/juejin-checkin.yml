@@ -1,0 +1,44 @@
+name: 掘金签到
+
+# 掘金的 growth_api 需要浏览器签名参数，只能在带 Chromium 的 runner 上跑，
+# 因此由 GitHub Actions 执行，结果回报给 VueChestServer 记录。
+on:
+  schedule:
+    # 每天 UTC 22:00 = 北京时间 06:00，避开 server 侧 01:17 UTC 的签到轮次
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 安装 Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: 执行签到
+        env:
+          CHECKIN_SERVER: ${{ vars.CHECKIN_SERVER }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: node run.js juejin
+
+      - name: 上传失败截图
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: juejin-debug
+          path: workers/debug
+          if-no-files-found: ignore
+          retention-days: 3

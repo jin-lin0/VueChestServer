@@ -170,7 +170,4 @@ module.exports = {
   run,
   parseOptions,
   obtain,
-  sendSms,
-  login,
-  refresh,
 };
