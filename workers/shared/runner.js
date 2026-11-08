@@ -41,7 +41,10 @@ async function runTask({
   async function report(ownerId, result) {
     try {
       await client.report(task, ownerId, result);
-      log(`📮 超管 ${ownerId} 上报成功：${result.status}`);
+      const summary = String(result.summary || "").trim();
+      log(
+        `📮 超管 ${ownerId} 上报成功：${result.status}${summary ? ` · ${summary}` : ""}`,
+      );
       return true;
     } catch (error) {
       log(`❌ 超管 ${ownerId} 上报失败：${error.message}`);

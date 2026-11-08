@@ -125,6 +125,26 @@ test("逐个超管执行，互不影响，成功后各自上报", async (t) => {
   );
 });
 
+test("上报日志带上摘要，便于直接在 Actions 里看结果", async (t) => {
+  const logs = [];
+  const f = fixture({
+    owners: [2],
+    run: async () => ({ status: "already_done", summary: "今天已经签到过了" }),
+  });
+  await runTask({
+    task: "demo",
+    flow: f.flow,
+    client: f.client,
+    launcher: { launch: async () => fakeBrowser(f.events) },
+    env: {},
+    log: (...args) => logs.push(args.join(" ")),
+    debugDir: tempDir(t),
+  });
+
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /上报成功：already_done · 今天已经签到过了/);
+});
+
 test("一个超管失败仍继续下一个，并各自记录失败", async (t) => {
   const f = fixture({
     owners: [2, 3],
