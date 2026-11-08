@@ -19,15 +19,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: pnpm
+          cache-dependency-path: workers/pnpm-lock.yaml
 
       - name: 安装依赖
-        run: npm install --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
+
+      - name: 缓存 Playwright 浏览器
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('workers/pnpm-lock.yaml') }}
 
       - name: 安装 Chromium
-        run: npx playwright install --with-deps chromium
+        run: pnpm exec playwright install --with-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+
+      - name: 安装 Chromium 系统依赖
+        run: pnpm exec playwright install-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
 
       - name: 执行签到
         env:
