@@ -30,7 +30,7 @@ async function superAdminRecipients() {
   return recipients;
 }
 
-/** 单个超管的收件地址，用于签到失败这类只属于该账号的告警。 */
+/** 单个超管的收件地址，用于任务失败这类只属于该账号的告警。 */
 async function ownerRecipient(ownerId) {
   const id = Number(ownerId);
   const user =

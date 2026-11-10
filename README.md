@@ -179,7 +179,7 @@ curl -X POST https://<domain>/api/stock-digest/run -H "Authorization: Bearer $CR
 
 **可观测性**：每次执行（含邮件失败）写入 `cron_runs`，失败时向所有超管发告警邮件。
 登录用户可读 `GET /api/stock-digest/history?days=30`（战绩数据），
-管理员可读 `GET /api/stock-digest/runs`（最近执行记录）。
+执行记录统一走 `GET /api/daily/admin/logs?task=stock-digest`。
 
 **超时保护**：生产区域访问国内上游明显慢于本地，因此设置了整体预算（默认 40s）：
 预算耗尽会跳过剩余策略并照常发邮件，避免整单 504。当前 `maxDuration` 为 300s
@@ -292,11 +292,11 @@ GitHub 仓库里配 Variable `DAILY_SERVER` 和 Secret `CRON_SECRET`，
 
 凭据始终只写不读：接口响应、日志和页面都不会回显 Access Token、Refresh Token 或 Cookie。数据库中也只保存 AES-256-GCM 密文，不提供明文录入或“是否加密”开关。若确实需要直接在数据库录入，必须自行按既有格式生成密文；否则请在后台页面或使用 `PUT /api/daily/credentials/:task` 写入。
 
-审计与执行记录复用 `cron_runs`，按 `job` 前缀区分：执行记录为 `daily:<task>`，配置操作为 `daily-config:<task>`，两种记录都带 `ownerId`。日志查询会同时按归属用户过滤并显式排除配置审计，避免跨超管读取或混入签到结果。
+审计与执行记录复用 `cron_runs`，按 `job` 前缀区分：执行记录统一为 `daily:<task>`（含全局任务 `daily:stock-digest`），配置操作为 `daily-config:<task>`。前缀由 `utils/cronJobs.js` 统一构造与解析；`daily:` 带冒号，天然不会匹配 `daily-config:`。日志查询按归属超管过滤普通任务，全局任务的结果对所有超管可见。
 
 失败告警按账号维度发送：站点执行失败或 worker 上报 `failed` 时，邮件只发给该凭据归属的超管邮箱（`users.email`）。超管未配置邮箱时不发信，只保留 `cron_runs` 记录；告警发送失败也不会改变任务结果。
 
-超管后台页面叫「每日任务」：签到站点之外，策略选股日报也作为全局任务列出（`id = stock-digest`），可以在这里查看最近结果并手动触发。它不涉及凭据，也不会写入 `daily_task_states`；执行记录仍落在 `cron_runs`（`job = stock-digest`），并会出现在同一个执行日志里。
+超管后台页面叫「每日任务」：签到站点之外，策略选股日报也作为全局任务列出（`id = stock-digest`，`executor = global`，`requiresCredentials = false`），可以在这里查看最近结果并手动触发。它没有凭据字段，`daily_task_states` 里只为开关留一行空凭据；执行记录落在 `cron_runs`（`job = daily:stock-digest`），并会出现在同一个执行日志里。
 
 每个任务卡片带暂停开关，状态存在 `daily_task_states.enabled`（日报用 `ownerId:stock-digest` 这一行）。暂停只影响定时轮次和 worker 账号列表，凭据保留，手动执行仍然放行；日报暂停后该超管不再收到日报和日报告警。
 

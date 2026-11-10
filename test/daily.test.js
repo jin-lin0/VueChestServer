@@ -335,6 +335,22 @@ test("失败账号不影响其他任务，错误摘要不包含凭据，失败�
   assert.equal(count, 3);
 });
 
+test("租约覆盖整段单任务超时，执行未结束前不会被并发实例抢占", async (t) => {
+  key(t);
+  let leaseUntil = 0;
+  let holder;
+  holder = fixture(async () => {
+    leaseUntil = new Date(holder.rows[0].leaseUntil).getTime()
+    return { status: "success", summary: "完成" }
+  });
+  await holder.service.runAll();
+  // 默认单任务超时 60s；租约必须比它更长（含固定余量），否则任务没跑完就会过期
+  assert.ok(
+    leaseUntil - Date.now() > 60000,
+    `租约只剩 ${leaseUntil - Date.now()}ms`,
+  );
+});
+
 test("进程遗留租约到期后可恢复，未到期时不执行", async (t) => {
   key(t);
   let count = 0;

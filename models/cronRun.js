@@ -20,7 +20,7 @@ const CronRun = sequelize.define(
       type: DataTypes.STRING(64),
       allowNull: false,
     },
-    // 签到类任务按超级管理员隔离；其它定时任务（如股票日报）保持 null。
+    // 按超管隔离的任务（站点凭据型）写入归属人；全局任务（如股票日报）保持 null。
     ownerId: {
       type: DataTypes.INTEGER,
       allowNull: true,

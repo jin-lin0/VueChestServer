@@ -1,5 +1,4 @@
 const express = require("express");
-const { Op } = require("sequelize");
 const State = require("../models/dailyTaskState");
 const Run = require("../models/cronRun");
 const cronAuth = require("../middleware/cronAuth");
@@ -7,25 +6,31 @@ const { authMiddleware } = require("../middleware/auth");
 const { superAdminOnly } = require("../middleware/superAdmin");
 const { TaskError } = require("../utils/taskCredentials");
 const {
+  executionJob,
+  configJob,
+  taskIdFromJob,
+  executionWhere,
+  configWhere,
+} = require("../utils/cronJobs");
+const {
   tasks,
+  globalTasks,
   dayKey,
   accountId,
   createDailyTaskService,
 } = require("../services/daily");
-const { runStockDigest } = require("../services/stockDigestJob");
 
 const service = createDailyTaskService({ State, Run });
 const router = express.Router();
+const registry = [...tasks, ...globalTasks];
+const globalTaskIds = globalTasks.map((task) => task.id);
 
-// 不属于签到、但同样按天执行的全局任务。收进「每日任务」页面统一查看与触发。
-const GLOBAL_TASKS = [
-  {
-    id: "stock-digest",
-    name: "策略选股日报",
-    description: "工作日生成策略报告并发送到每个超管邮箱",
-    timeZone: "Asia/Shanghai",
-  },
-];
+function findTask(taskId) {
+  const task = registry.find((item) => item.id === taskId);
+  if (!task)
+    throw new TaskError("未注册的每日任务", "UNKNOWN_DAILY_TASK", 400);
+  return task;
+}
 
 async function run(req, res) {
   const result = await service.runAll();
@@ -89,7 +94,13 @@ function taskMeta(task) {
     name: task.name,
     description: task.description || "",
     timeZone: task.timeZone,
-    executor: task.executor === "worker" ? "worker" : "server",
+    executor:
+      task.executor === "worker"
+        ? "worker"
+        : task.executor === "global"
+          ? "global"
+          : "server",
+    requiresCredentials: task.requiresCredentials !== false,
     credentialFields: Array.isArray(task.credentialFields)
       ? task.credentialFields.map((field) => ({ ...field }))
       : [],
@@ -100,7 +111,7 @@ function taskMeta(task) {
 async function audit(task, user, action) {
   try {
     await Run.create({
-      job: `daily-config:${task}`,
+      job: configJob(task),
       ownerId: user.id,
       success: true,
       durationMs: 0,
@@ -147,104 +158,72 @@ function parsePaging(query) {
   return { limit: rawLimit, offset: rawOffset };
 }
 
-function executionJobWhere(task, ownerId) {
-  if (task === "stock-digest") return { job: "stock-digest" };
-  if (task) return { job: `daily:${task}`, ownerId };
-  // daily-config: 也以 daily: 开头，必须显式排除。
-  return {
-    [Op.or]: [
-      {
-        [Op.and]: [
-          { ownerId },
-          { job: { [Op.like]: "daily:%" } },
-          { job: { [Op.notLike]: "daily-config:%" } },
-        ],
-      },
-      { job: "stock-digest" },
-    ],
-  };
-}
-
-function auditJobWhere(task) {
-  return {
-    job: task ? `daily-config:${task}` : { [Op.like]: "daily-config:%" },
-  };
+/**
+ * 全局任务没有 owner 凭据，启用状态用同一张表里 credentials 为空的行承载。
+ * 关掉只影响「谁还收」和定时轮次，凭据型任务才走 service.setEnabled。
+ */
+async function setGlobalEnabled(taskId, ownerId, enabled) {
+  const id = accountId(ownerId, taskId);
+  const [, created] = await State.findOrCreate({
+    where: { id },
+    defaults: { ownerId, taskId, credentials: "", enabled },
+  });
+  if (!created) await State.update({ enabled }, { where: { id } });
+  return { task: taskId, ownerId, enabled };
 }
 
 // ===== 超管后台 =====
 // 与上面的 Cron 入口完全分离：这里使用 VueChest 登录态和超级管理员角色。
 
 router.get("/admin/tasks", authMiddleware, superAdminOnly, async (req, res) => {
+  const ownerId = req.user.id;
   const items = await Promise.all(
-    tasks.map(async (task) => {
-      const job = `daily:${task.id}`;
-      const ownerId = req.user.id;
+    registry.map(async (task) => {
+      const job = executionJob(task.id);
+      // 全局任务的结果没有归属超管（cron 触发时不存在 owner），只按 job 查。
+      const global = task.requiresCredentials === false;
+      const runWhere = global ? { job } : { job, ownerId };
       const [state, lastRun, lastSuccess, lastFailure] = await Promise.all([
         State.findByPk(accountId(ownerId, task.id), {
           attributes: ["id", "enabled", "lastCompletedDate", "leaseUntil"],
         }),
+        Run.findOne({ where: runWhere, order: [["id", "DESC"]] }),
         Run.findOne({
-          where: { job, ownerId },
+          where: { ...runWhere, success: true },
           order: [["id", "DESC"]],
         }),
         Run.findOne({
-          where: { job, ownerId, success: true },
-          order: [["id", "DESC"]],
-        }),
-        Run.findOne({
-          where: { job, ownerId, success: false },
+          where: { ...runWhere, success: false },
           order: [["id", "DESC"]],
         }),
       ]);
+      const today = dayKey(Date.now(), task.timeZone);
+      // 全局任务没有 lastCompletedDate：以最近一次成功记录的业务日期判断今日是否已执行。
+      const todayCompleted = global
+        ? !!lastRun?.success && dayKey(lastRun.createdAt, task.timeZone) === today
+        : !!state?.lastCompletedDate && state.lastCompletedDate === today;
       return {
         ...taskMeta(task),
         ownerId,
-        configured: !!state,
+        // 全局任务没有凭据，恒为"可执行"；普通任务是否配置取决于有没有状态行。
+        configured: global ? true : !!state,
         enabled: state?.enabled !== false,
         running: !!(
           state?.leaseUntil && new Date(state.leaseUntil).getTime() > Date.now()
         ),
-        todayCompleted:
-          !!state?.lastCompletedDate &&
-          state.lastCompletedDate === dayKey(Date.now(), task.timeZone),
-        lastCompletedDate: state?.lastCompletedDate || null,
+        todayCompleted,
+        lastCompletedDate: global
+          ? todayCompleted
+            ? today
+            : null
+          : state?.lastCompletedDate || null,
         lastRun: serializeRun(lastRun),
         lastSuccessAt: lastSuccess?.createdAt || null,
         lastFailureAt: lastFailure?.createdAt || null,
       };
     }),
   );
-  const globals = await Promise.all(
-    GLOBAL_TASKS.map(async (task) => {
-      const job = task.id;
-      const [lastRun, lastSuccess, lastFailure, state] = await Promise.all([
-        Run.findOne({ where: { job }, order: [["id", "DESC"]] }),
-        Run.findOne({ where: { job, success: true }, order: [["id", "DESC"]] }),
-        Run.findOne({ where: { job, success: false }, order: [["id", "DESC"]] }),
-        State.findByPk(accountId(req.user.id, task.id), {
-          attributes: ["enabled"],
-        }),
-      ]);
-      const today = dayKey(Date.now(), task.timeZone);
-      const completed =
-        !!lastRun?.success && dayKey(lastRun.createdAt, task.timeZone) === today;
-      return {
-        ...task,
-        executor: "server",
-        requiresCredentials: false,
-        enabled: state?.enabled !== false,
-        credentialFields: [],
-        configured: true,
-        running: false,
-        todayCompleted: completed,
-        lastCompletedDate: completed ? today : null,
-        lastRun: serializeRun(lastRun),
-        lastSuccessAt: lastSuccess?.createdAt || null,
-        lastFailureAt: lastFailure?.createdAt || null,
-      };
-    }),
-  );
-  res.json({ success: true, data: { items: [...items, ...globals] } });
+  res.json({ success: true, data: { items } });
 });
 
 router.put(
@@ -286,24 +265,12 @@ router.put(
         400,
       );
     const enabled = req.body.enabled;
-    if (taskId === "stock-digest") {
-      const id = accountId(req.user.id, taskId);
-      const [, created] = await State.findOrCreate({
-        where: { id },
-        defaults: {
-          ownerId: req.user.id,
-          taskId,
-          credentials: "",
-          enabled,
-        },
-      });
-      if (!created) await State.update({ enabled }, { where: { id } });
-      return res.json({
-        success: true,
-        data: { task: taskId, ownerId: req.user.id, enabled },
-      });
-    }
-    const data = await service.setEnabled(req.user.id, taskId, enabled);
+    const task = findTask(taskId);
+    const data =
+      task.requiresCredentials === false
+        ? await setGlobalEnabled(task.id, req.user.id, enabled)
+        : await service.setEnabled(req.user.id, task.id, enabled);
+    await audit(task.id, req.user, enabled ? "恢复定时执行" : "暂停定时执行");
     res.json({ success: true, data });
   },
 );
@@ -313,32 +280,46 @@ router.post(
   authMiddleware,
   superAdminOnly,
   async (req, res) => {
-    if (req.params.task === "stock-digest") {
-      const outcome = await runStockDigest();
-      let result;
-      if (!outcome.success) {
-        result = { status: "failed", summary: outcome.error };
-      } else if (outcome.result.skipped) {
-        result = { status: "skipped", summary: "已暂停策略日报，本次跳过" };
-      } else {
-        result = {
-          status: "success",
-          summary: `发送 ${outcome.result.mails.length} 封；采集 ${outcome.result.collected.length}/${outcome.result.requested} 个策略`,
-        };
-      }
-      return res.json({
-        success: true,
-        data: { success: outcome.success, results: [{ task: "stock-digest", ...result }] },
+    const task = findTask(parseTaskParam(req.params.task));
+    let data;
+    if (task.requiresCredentials === false) {
+      const result = await runGlobalTask(task);
+      data = {
+        success: result.status !== "failed" && result.recorded !== false,
+        results: [result],
+      };
+    } else {
+      data = await service.runOne(req.user.id, task.id, {
+        force: req.body?.force === true,
       });
     }
-    const data = await service.runOne(req.user.id, req.params.task, {
-      force: req.body?.force === true,
-    });
     // 请求本身成功，单个任务的执行结果放在 data.success 中，避免前端
     // 统一请求层把失败结果整体丢掉、看不到具体原因。
     res.json({ success: true, data });
   },
 );
+
+/** 全局任务自己的 run() 已经把结果收敛成 {success,status,summary}。 */
+async function runGlobalTask(task) {
+  try {
+    const outcome = await task.run();
+    return {
+      task: task.id,
+      ownerId: null,
+      status: outcome.status,
+      summary: outcome.summary,
+      recorded: true,
+    };
+  } catch (error) {
+    return {
+      task: task.id,
+      ownerId: null,
+      status: "failed",
+      summary: error.message || "任务执行失败",
+      recorded: false,
+    };
+  }
+}
 
 router.get(
   "/admin/logs",
@@ -348,7 +329,11 @@ router.get(
     const task = parseTaskParam(req.query.task);
     const success = parseSuccess(req.query.success);
     const { limit, offset } = parsePaging(req.query);
-    const where = executionJobWhere(task, req.user.id);
+    const where = executionWhere({
+      taskId: task,
+      ownerId: req.user.id,
+      globalTaskIds,
+    });
     if (success !== undefined) where.success = success;
     const [rows, total] = await Promise.all([
       Run.findAll({ where, order: [["id", "DESC"]], limit, offset }),
@@ -359,7 +344,7 @@ router.get(
       data: {
         items: rows.map((row) => ({
           ...serializeRun(row),
-          task: String(row.job || "").replace(/^daily:/, ""),
+          task: taskIdFromJob(row.job),
         })),
         total,
         limit,
@@ -376,7 +361,7 @@ router.get(
   async (req, res) => {
     const task = parseTaskParam(req.query.task);
     const { limit, offset } = parsePaging(req.query);
-    const where = auditJobWhere(task);
+    const where = configWhere(task);
     where.ownerId = req.user.id;
     const [rows, total] = await Promise.all([
       Run.findAll({ where, order: [["id", "DESC"]], limit, offset }),
@@ -387,7 +372,7 @@ router.get(
       data: {
         items: rows.map((row) => ({
           ...serializeRun(row),
-          task: String(row.job || "").replace(/^daily-config:/, ""),
+          task: taskIdFromJob(row.job),
         })),
         total,
         limit,

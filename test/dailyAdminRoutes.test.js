@@ -14,6 +14,16 @@ const task = {
   ],
 };
 
+// 未配置凭据的任务：列表里必须显示 configured=false，不能因为同页有已配置任务而误报。
+const unconfiguredTask = {
+  id: "juejin",
+  name: "掘金",
+  description: "每日签到 + 免费抽奖",
+  timeZone: "Asia/Shanghai",
+  executor: "worker",
+  credentialFields: [{ key: "cookie", label: "Cookie", type: "textarea", required: true }],
+};
+
 function sortRuns(rows) {
   return [...rows].sort((a, b) => b.id - a.id);
 }
@@ -139,6 +149,7 @@ async function withRouter(run) {
   const cleared = [];
   const executed = [];
   const toggled = [];
+  const globalStates = [];
 
   const State = {
     async findByPk(id) {
@@ -148,6 +159,14 @@ async function withRouter(run) {
         lastCompletedDate: "2026-11-08",
         leaseUntil: null,
       };
+    },
+    async findOrCreate({ where, defaults }) {
+      const created = { id: where.id, ...defaults };
+      globalStates.push(created);
+      return [created, true];
+    },
+    async update() {
+      return [0];
     },
   };
 
@@ -212,7 +231,23 @@ async function withRouter(run) {
     "../models/dailyTaskState": State,
     "../models/cronRun": Run,
     "../services/daily": {
-      tasks: [task],
+      tasks: [task, unconfiguredTask],
+      globalTasks: [
+        {
+          id: "stock-digest",
+          name: "策略选股日报",
+          description: "工作日生成策略报告并发送到每个超管邮箱",
+          timeZone: "Asia/Shanghai",
+          executor: "global",
+          requiresCredentials: false,
+          credentialFields: [],
+          run: async () => ({
+            success: true,
+            status: "success",
+            summary: "发送 1 封",
+          }),
+        },
+      ],
       dayKey: () => "2026-11-08",
       accountId: (ownerId, taskId) => `${ownerId}:${taskId}`,
       createDailyTaskService: () => service,
@@ -277,6 +312,7 @@ async function withRouter(run) {
       cleared,
       executed,
       toggled,
+      globalStates,
     });
   } finally {
     server.closeAllConnections();
@@ -319,6 +355,10 @@ test("任务列表只返回状态与字段元数据，不泄露凭据", async ()
     assert.equal(item.lastSuccessAt, "2026-11-03T01:00:00.000Z");
     assert.equal(item.lastFailureAt, "2026-11-08T01:00:00.000Z");
     assert.deepEqual(item.credentialFields, task.credentialFields);
+
+    const unconfigured = body.data.items.find((row) => row.id === "juejin");
+    assert.equal(unconfigured.configured, false);
+    assert.equal(unconfigured.enabled, true);
   });
 });
 
@@ -326,7 +366,7 @@ test("股票日报作为全局任务出现在每日任务列表和执行日志�
   await withRouter(async ({ request, runRows }) => {
     runRows.unshift({
       id: 50,
-      job: "stock-digest",
+      job: "daily:stock-digest",
       ownerId: null,
       success: true,
       durationMs: 1200,
@@ -338,7 +378,7 @@ test("股票日报作为全局任务出现在每日任务列表和执行日志�
     const digest = body.data.items.find((item) => item.id === "stock-digest");
     assert.ok(digest, "全局任务必须出现在任务列表");
     assert.equal(digest.requiresCredentials, false);
-    assert.equal(digest.executor, "server");
+    assert.equal(digest.executor, "global");
     assert.equal(digest.todayCompleted, true);
     assert.equal(digest.lastRun.detail, "评估 7 批，发送 1 封");
 
@@ -348,6 +388,39 @@ test("股票日报作为全局任务出现在每日任务列表和执行日志�
     const filtered = await (await request("/admin/logs?task=stock-digest")).json();
     assert.equal(filtered.data.total, 1);
     assert.equal(filtered.data.items[0].detail, "评估 7 批，发送 1 封");
+  });
+});
+
+test("全局任务的开关与立即执行走自己的分支，不经过凭据服务", async () => {
+  await withRouter(async ({ request, globalStates, executed }) => {
+    const put = await request("/admin/tasks/stock-digest/enabled", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(put.status, 200);
+    const toggledBody = await put.json();
+    assert.equal(toggledBody.data.enabled, false);
+    assert.deepEqual(globalStates, [
+      {
+        id: "1:stock-digest",
+        ownerId: 1,
+        taskId: "stock-digest",
+        credentials: "",
+        enabled: false,
+      },
+    ]);
+    assert.equal(executed.length, 0, "全局任务不该被当作凭据任务执行");
+
+    const run = await request("/admin/tasks/stock-digest/run", {
+      method: "POST",
+    });
+    assert.equal(run.status, 200);
+    const runBody = await run.json();
+    assert.equal(runBody.data.success, true);
+    assert.equal(runBody.data.results[0].task, "stock-digest");
+    assert.equal(runBody.data.results[0].status, "success");
+    assert.equal(runBody.data.results[0].ownerId, null);
   });
 });
 

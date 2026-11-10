@@ -194,7 +194,7 @@ test("服务器任务失败时只告警一次，成功不告警", async (t) => {
   assert.equal(bad.alerts.length, 1);
   assert.equal(bad.alerts[0].task.id, "server-task");
   // 对外只发安全摘要，不把上游原始错误（可能含地址/令牌）写进邮件
-  assert.match(bad.alerts[0].summary, /签到执行失败/);
+  assert.match(bad.alerts[0].summary, /任务执行失败/);
 });
 
 test("非法状态或给服务器任务上报都会被拒绝", async (t) => {

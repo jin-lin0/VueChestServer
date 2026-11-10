@@ -4,11 +4,17 @@ const { runDailyDigest } = require("./stockDigest");
 const { sendHtmlMail } = require("../utils/mail");
 const { superAdminRecipients } = require("../utils/notificationRecipients");
 const escapeHtml = require("../utils/escapeHtml");
+const { executionJob } = require("../utils/cronJobs");
 
 /** 执行记录落库失败不能影响主流程（邮件已发出就算交付成功）。 */
 async function record(success, durationMs, detail) {
   try {
-    await CronRun.create({ job: "stock-digest", success, durationMs, detail });
+    await CronRun.create({
+      job: executionJob("stock-digest"),
+      success,
+      durationMs,
+      detail,
+    });
   } catch (error) {
     console.error("[stock-digest] 执行记录落库失败:", error.message);
   }

@@ -13,6 +13,10 @@ async function withRouter(run) {
     "../models/dailyTaskState": {},
     "../models/cronRun": {},
     "../services/daily": {
+      tasks: [],
+      globalTasks: [],
+      dayKey: () => "2026-11-08",
+      accountId: (ownerId, taskId) => `${ownerId}:${taskId}`,
       createDailyTaskService: () => ({
         configure: async (ownerId, task, value) => {
           if (!ownerId) {
